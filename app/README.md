@@ -1,16 +1,12 @@
-# FastAPI app
+# Express app
 
-## Local dev (separate venv)
+## Local dev
 
 From this directory:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -U pip
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-python -m uvicorn cdk1_app.main:app --reload
+npm install
+npm run dev
 ```
 
 App:
@@ -20,7 +16,13 @@ App:
 Run tests:
 
 ```bash
-pytest
+npm test
+```
+
+Build:
+
+```bash
+npm run build
 ```
 
 ## Docker
@@ -28,6 +30,7 @@ pytest
 From this directory:
 
 ```bash
+npm run build
 docker build -t cdk1-app:local .
 docker run --rm -p 8000:8000 cdk1-app:local
 ```
