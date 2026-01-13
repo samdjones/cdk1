@@ -1,8 +1,1 @@
-from fastapi import FastAPI
-
-app = FastAPI(title="cdk1-app")
-
-
-@app.get("/health")
-def health() -> dict:
-    return {"status": "ok"}
+from cdk1_app.main import app

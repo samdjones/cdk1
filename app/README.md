@@ -9,12 +9,19 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
 pip install -r requirements.txt
-python -m uvicorn main:app --reload
+pip install -r requirements-dev.txt
+python -m uvicorn cdk1_app.main:app --reload
 ```
 
 App:
 
 - `GET /health`
+
+Run tests:
+
+```bash
+pytest
+```
 
 ## Docker
 
