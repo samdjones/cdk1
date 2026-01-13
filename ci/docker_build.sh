@@ -3,4 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../app"
 
+npm ci
+npm run build
+
 docker build -t cdk1-app:ci .
