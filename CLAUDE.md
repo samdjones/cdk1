@@ -68,3 +68,8 @@ cdk diff             # Compare deployed vs current
 
 - ESLint with TypeScript and Prettier integration
 - Prettier config: semicolons, double quotes, 2-space tabs, trailing commas (ES5)
+
+## Workflow
+
+- Create feature branches for changes (do not commit directly to main)
+- Open PRs for review and merge
