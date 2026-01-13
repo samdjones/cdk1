@@ -6,6 +6,29 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: cd app && npm ci
+
+      - name: Lint
+        run: cd app && npm run lint
+
+      - name: Format check
+        run: cd app && npm run format:check
+
   test:
     runs-on: ubuntu-latest
 
