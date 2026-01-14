@@ -3,6 +3,7 @@ from aws_cdk import (
     aws_ec2 as ec2,
     aws_ecs as ecs,
     aws_ecs_patterns as ecs_patterns,
+    aws_lambda as lambda_,
 )
 from constructs import Construct
 
@@ -17,8 +18,17 @@ class Cdk1Stack(Stack):
         # ECS Cluster
         cluster = ecs.Cluster(self, "Cluster", vpc=vpc)
 
+        # Lambda function for multiplication
+        multiply_lambda = lambda_.Function(
+            self,
+            "MultiplyFunction",
+            runtime=lambda_.Runtime.NODEJS_22_X,
+            handler="handler.handler",
+            code=lambda_.Code.from_asset("../lambda/multiply/dist"),
+        )
+
         # Fargate service with ALB (builds image from app/Dockerfile)
-        ecs_patterns.ApplicationLoadBalancedFargateService(
+        fargate_service = ecs_patterns.ApplicationLoadBalancedFargateService(
             self,
             "Service",
             cluster=cluster,
@@ -28,6 +38,12 @@ class Cdk1Stack(Stack):
             task_image_options=ecs_patterns.ApplicationLoadBalancedTaskImageOptions(
                 image=ecs.ContainerImage.from_asset("../app"),
                 container_port=8000,
+                environment={
+                    "MULTIPLY_LAMBDA_NAME": multiply_lambda.function_name,
+                },
             ),
             public_load_balancer=True,
         )
+
+        # Grant ECS task permission to invoke Lambda
+        multiply_lambda.grant_invoke(fargate_service.task_definition.task_role)
