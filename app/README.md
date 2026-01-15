@@ -6,6 +6,14 @@ From this directory:
 
 ```bash
 npm install
+npm run build
+npm start
+```
+
+For development with hot reload:
+
+```bash
+npm install
 npm run dev
 ```
 
