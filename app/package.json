@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",
-    "dev": "ts-node src/main.ts",
+    "dev": "tsx src/main.ts",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest",
     "lint": "eslint src tests",
     "lint:fix": "eslint src tests --fix",
@@ -31,6 +31,7 @@
     "supertest": "^7.0.0",
     "ts-jest": "^29.2.5",
     "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.53.0"
   }
