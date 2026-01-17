@@ -50,6 +50,16 @@ docker build -t cdk1-app:local .
 docker run --rm -p 8000:8000 cdk1-app:local
 ```
 
+### Lambda (TypeScript)
+
+All commands run from the `lambda/multiply/` directory:
+
+```bash
+npm install          # Install dependencies
+npm run build        # Compile TypeScript to dist/
+npm test             # Run Jest tests (uses experimental VM modules)
+```
+
 ### Infrastructure (CDK/Python)
 
 All commands run from the `iac/` directory:
