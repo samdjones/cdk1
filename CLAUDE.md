@@ -92,7 +92,50 @@ Some App tasks are delegated to Lambda functions in the lambda directory.
 ### Infrastructure
 
 - `iac/app.py` - CDK app entry point
-- `iac/cdk1/cdk1_stack.py` - Stack definition (VPC, ECS Cluster, Fargate service with ALB, Lambda function)
+- `iac/cdk1/cdk1_stack.py` - Stack definition (VPC, ECS Cluster, Fargate service with ALB, Lambda function, CloudFront distribution)
+
+**Architecture Flow:**
+```
+Internet → CloudFront (HTTPS:443) → ALB (HTTP:80, public) → Fargate (HTTP:8000)
+```
+
+**Components:**
+- VPC with public/private subnets across 2 AZs
+- ECS Fargate service running Express app (container port 8000)
+- Application Load Balancer (internet-facing, security group restricted)
+- CloudFront distribution (HTTPS endpoint)
+- Lambda function for multiplication operations
+- Security groups for network access control
+
+## Security Architecture
+
+### CloudFront + ALB Security Model
+
+The application uses a defense-in-depth approach:
+
+1. **CloudFront as Primary Entry Point**
+   - HTTPS-only access (HTTP redirected to HTTPS)
+   - Single public endpoint: `https://d3b9p9zcbknxpt.cloudfront.net`
+   - Connects to ALB origin via HTTP (AWS private network)
+
+2. **ALB Security Group Restriction**
+   - ALB is internet-facing but security group limits access to CloudFront only
+   - Uses AWS managed prefix list `pl-3b927c52` (CloudFront IP ranges)
+   - Configuration: `open_listener=False` prevents default 0.0.0.0/0 rule
+   - Direct public internet access to ALB is blocked
+
+3. **ECS Tasks in Private Subnets**
+   - Fargate tasks run in private subnets
+   - Only accessible via ALB
+   - No direct internet access to containers
+
+**Key Security Files:**
+- `iac/cdk1/cdk1_stack.py:49` - `open_listener=False` configuration
+- `iac/cdk1/cdk1_stack.py:55-60` - CloudFront prefix list security group rule
+
+**Testing Security:**
+- ✅ CloudFront access works: `curl https://d3b9p9zcbknxpt.cloudfront.net/health`
+- ❌ Direct ALB access blocked: `curl http://<alb-dns>/health` (times out)
 
 ## Code Style
 
