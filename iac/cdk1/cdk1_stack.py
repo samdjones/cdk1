@@ -46,10 +46,18 @@ class Cdk1Stack(Stack):
                 },
             ),
             public_load_balancer=True,
+            open_listener=False,  # Don't add default 0.0.0.0/0 rule
         )
 
         # Configure health check to use /health endpoint
         fargate_service.target_group.configure_health_check(path="/health")
+
+        # Restrict ALB access to CloudFront only using managed prefix list
+        fargate_service.load_balancer.connections.allow_from(
+            other=ec2.Peer.prefix_list("pl-3b927c52"),  # CloudFront managed prefix list
+            port_range=ec2.Port.tcp(80),
+            description="Allow HTTP from CloudFront only",
+        )
 
         # Grant ECS task permission to invoke Lambda
         multiply_lambda.grant_invoke(fargate_service.task_definition.task_role)
@@ -84,5 +92,5 @@ class Cdk1Stack(Stack):
             self,
             "LoadBalancerURL",
             value=f"http://{fargate_service.load_balancer.load_balancer_dns_name}",
-            description="ALB HTTP URL (for debugging only)",
+            description="ALB HTTP URL (restricted to CloudFront access only)",
         )
