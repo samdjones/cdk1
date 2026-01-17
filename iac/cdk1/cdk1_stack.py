@@ -45,5 +45,8 @@ class Cdk1Stack(Stack):
             public_load_balancer=True,
         )
 
+        # Configure health check to use /health endpoint
+        fargate_service.target_group.configure_health_check(path="/health")
+
         # Grant ECS task permission to invoke Lambda
         multiply_lambda.grant_invoke(fargate_service.task_definition.task_role)

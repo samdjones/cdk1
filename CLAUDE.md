@@ -7,8 +7,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a monorepo with two main components:
 
 - **app/** - TypeScript/Express HTTP server (Node.js 22)
+- **lambda/** - TypeScript Lambda function (Node.js 22)
 - **iac/** - AWS CDK infrastructure (Python)
 - **ci/** - CI scripts for testing and Docker builds
+
+## Deploy & Destroy
+
+```bash
+./deploy.sh      # Fast mode: keeps node_modules, uses npm install
+./deploy.sh -c   # Clean mode: deletes node_modules, uses npm ci
+./destroy.sh     # Destroys the entire CDK stack
+./status.sh      # Brief status check
+./status.sh -d   # Detailed output with stack outputs/events
+```
+
+The deploy script builds Lambda and App, then deploys the CDK stack.
 
 ## Commands
 
