@@ -4,14 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Structure
 
-This is a monorepo with two main components:
-
+This is a monorepo with main component directories:
 - **app/** - TypeScript/Express HTTP server (Node.js 22)
-- **lambda/** - TypeScript Lambda function (Node.js 22)
+- **lambda/** - TypeScript Lambda functions (Node.js 22)
 - **iac/** - AWS CDK infrastructure (Python)
 - **ci/** - CI scripts for testing and Docker builds
 
-## Deploy & Destroy
+## Commands
+
+### Deploy & Destroy
+
+The deploy script builds Lambda and App, then deploys the CDK stack.
 
 ```bash
 ./deploy.sh      # Fast mode: keeps node_modules, uses npm install
@@ -20,10 +23,6 @@ This is a monorepo with two main components:
 ./status.sh      # Brief status check
 ./status.sh -d   # Detailed output with stack outputs/events
 ```
-
-The deploy script builds Lambda and App, then deploys the CDK stack.
-
-## Commands
 
 ### App (TypeScript/Express)
 
@@ -67,10 +66,18 @@ cdk diff             # Compare deployed vs current
 
 ### App
 
+This is the entrypoint to the app.
+
 - `src/app.ts` - Express application setup and route definitions (exported for testing)
 - `src/main.ts` - Server entry point, starts listening on PORT env var (default 8000)
 - `tests/` - Jest tests using supertest for HTTP testing
 - Uses ES modules (`"type": "module"` in package.json)
+
+### Lambda/Multiply
+
+Some App tasks are delageted to Lambda functions in the lambda directory.
+
+- `src/handler.ts` - Lambda function handler
 
 ### Infrastructure
 
