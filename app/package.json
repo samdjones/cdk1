@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
+    "dev:local": "tsx src/main-local.ts",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest",
     "lint": "eslint src tests",
     "lint:fix": "eslint src tests --fix",
