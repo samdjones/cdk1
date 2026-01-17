@@ -85,14 +85,14 @@ This is the entrypoint to the app.
 
 ### Lambda/Multiply
 
-Some App tasks are delageted to Lambda functions in the lambda directory.
+Some App tasks are delegated to Lambda functions in the lambda directory.
 
 - `src/handler.ts` - Lambda function handler
 
 ### Infrastructure
 
 - `iac/app.py` - CDK app entry point
-- `iac/cdk1/cdk1_stack.py` - Stack definition (currently defines an SQS queue)
+- `iac/cdk1/cdk1_stack.py` - Stack definition (VPC, ECS Cluster, Fargate service with ALB, Lambda function)
 
 ## Code Style
 
