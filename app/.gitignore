@@ -1,9 +1,0 @@
-*.swp
-
-# Node
-node_modules
-dist
-
-# CDK asset staging directory
-.cdk.staging
-cdk.out
