@@ -1,0 +1,16 @@
+{
+  "name": "xray-invoker",
+  "version": "1.0.0",
+  "description": "X-Ray POC Lambda invoker - triggers the ECS frontend",
+  "main": "dist/handler.js",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {}
+}

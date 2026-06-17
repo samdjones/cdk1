@@ -1,0 +1,25 @@
+{
+  "name": "app-xray",
+  "version": "1.0.0",
+  "description": "X-Ray POC ECS frontend app",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node --esm src/main.ts",
+    "start": "node dist/main.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@aws-sdk/client-lambda": "^3.600.0",
+    "@aws/aws-distro-opentelemetry-node-agent": "^0.7.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.48.0",
+    "@opentelemetry/sdk-node": "^0.52.0",
+    "express": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  }
+}
