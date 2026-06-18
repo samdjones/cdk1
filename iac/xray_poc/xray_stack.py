@@ -59,7 +59,7 @@ class XrayPocStack(Stack):
             function_name="xray-s3-writer",
             runtime=lambda_.Runtime.NODEJS_22_X,
             handler="handler.handler",
-            code=lambda_.Code.from_asset("../lambda/xray-s3-writer/dist"),
+            code=lambda_.Code.from_asset("lambda/xray-s3-writer/dist"),
             environment={
                 **common_otel_env,
                 "DOG_BUCKET_NAME": dog_bucket.bucket_name,
@@ -80,7 +80,7 @@ class XrayPocStack(Stack):
             function_name="xray-dog-fetcher",
             runtime=lambda_.Runtime.NODEJS_22_X,
             handler="handler.handler",
-            code=lambda_.Code.from_asset("../lambda/xray-dog-fetcher/dist"),
+            code=lambda_.Code.from_asset("lambda/xray-dog-fetcher/dist"),
             environment={
                 **common_otel_env,
                 "DOG_SNS_TOPIC_ARN": dog_topic.topic_arn,
@@ -148,7 +148,7 @@ class XrayPocStack(Stack):
 
         # ── App container ──────────────────────────────────────────────────
         app_image = ecs.ContainerImage.from_asset(
-            "../app-xray",
+            "app-xray",
         )
 
         app_container = task_definition.add_container(
@@ -162,7 +162,7 @@ class XrayPocStack(Stack):
                 "OTEL_PROPAGATORS": "xray",
                 "AWS_XRAY_DAEMON_ADDRESS": "localhost:2000",
                 "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "true",
-                "NODE_OPTIONS": "--require @aws/aws-distro-opentelemetry-node-agent/register",
+                "NODE_OPTIONS": "--require @aws/aws-distro-opentelemetry-node-autoinstrumentation/register",
             },
             logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-app"),
             essential=True,
@@ -212,7 +212,7 @@ class XrayPocStack(Stack):
             function_name="xray-invoker",
             runtime=lambda_.Runtime.NODEJS_22_X,
             handler="handler.handler",
-            code=lambda_.Code.from_asset("../lambda/xray-invoker/dist"),
+            code=lambda_.Code.from_asset("lambda/xray-invoker/dist"),
             environment={
                 **common_otel_env,
                 "FRONTEND_URL": alb_url,

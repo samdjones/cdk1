@@ -45,7 +45,7 @@ echo ""
 echo "Deploying XrayPocStack..."
 cd "$SCRIPT_DIR"
 source iac/.venv/bin/activate
-npx cdk deploy XrayPocStack \
+CDK_DOCKER=podman npx cdk deploy XrayPocStack \
   --require-approval never \
   --app "python iac/app_xray.py"
 
