@@ -40,8 +40,9 @@ See [`docs/xray-collector-setup.md`](docs/xray-collector-setup.md) for a full ex
 ## Deploy / Destroy
 
 ```bash
-./deploy.sh                                          # Build all components + deploy
-cdk destroy XrayPocStack --app "python iac/app_xray.py"   # Destroy the stack
+npm install                                                        # Install aws-cdk dev dep
+./deploy.sh                                                        # Build all components + deploy
+npx cdk destroy XrayPocStack --app "python iac/app_xray.py"       # Destroy the stack
 ```
 
 ## Trigger a Trace

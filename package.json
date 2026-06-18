@@ -1,0 +1,8 @@
+{
+  "name": "cdk1",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "aws-cdk": "^2.200.0"
+  }
+}

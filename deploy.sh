@@ -6,6 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "=== X-Ray POC Deploy ==="
 echo ""
 
+# ── Install root dev deps (aws-cdk for npx) ───────────────────────────────
+echo "Installing root dev dependencies..."
+cd "$SCRIPT_DIR"
+npm install
+echo "✓ root deps installed"
+
 # ── Build Lambda: xray-invoker ─────────────────────────────────────────────
 echo "Building lambda/xray-invoker..."
 cd "$SCRIPT_DIR/lambda/xray-invoker"
@@ -37,11 +43,11 @@ echo "✓ app-xray built"
 # ── CDK Deploy ────────────────────────────────────────────────────────────
 echo ""
 echo "Deploying XrayPocStack..."
-cd "$SCRIPT_DIR/iac"
-source .venv/bin/activate
-cdk deploy XrayPocStack \
+cd "$SCRIPT_DIR"
+source iac/.venv/bin/activate
+npx cdk deploy XrayPocStack \
   --require-approval never \
-  --app "python app_xray.py"
+  --app "python iac/app_xray.py"
 
 echo ""
 echo "=== Deploy complete ==="
