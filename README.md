@@ -2,6 +2,12 @@
 
 Disposable AWS X-Ray proof-of-concept demonstrating end-to-end distributed tracing across Lambda, ECS Fargate, SNS, and S3.
 
+## What It Does
+
+When triggered, the app fetches a random dog image URL from the [Dog CEO API](https://dog.ceo/dog-api/) and stores it in S3, propagating an X-Ray trace across every hop along the way.
+
+A single trace spans five services: a trigger Lambda kicks off an HTTP call to the ECS-hosted Express app, which invokes a dog-fetcher Lambda that calls the Dog CEO API, publishes the image URL to SNS, which in turn triggers an S3-writer Lambda that persists the URL and metadata to a bucket. The resulting trace is visible as a complete end-to-end service map in the AWS X-Ray console.
+
 ## Architecture
 
 ```
