@@ -1,15 +1,24 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "=== Destroy CDK Stack ==="
-cd "$SCRIPT_DIR/iac"
-if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
+echo "=== X-Ray POC Destroy ==="
+echo ""
+echo "This will destroy XrayPocStack and all its resources."
+read -p "Are you sure? (yes/no): " confirm
+if [[ "$confirm" != "yes" ]]; then
+  echo "Aborted."
+  exit 0
 fi
-source .venv/bin/activate
-pip install -q -r requirements.txt
-cdk destroy --force
 
-echo "=== Stack destroyed ==="
+echo ""
+echo "Destroying XrayPocStack..."
+cd "$SCRIPT_DIR"
+source iac/.venv/bin/activate
+CDK_DOCKER=podman npx cdk destroy XrayPocStack \
+  --force \
+  --app "python iac/app_xray.py"
+
+echo ""
+echo "=== Destroy complete ==="
