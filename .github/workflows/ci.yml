@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  lint:
+  build:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,33 +18,19 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: app/package-lock.json
+          cache-dependency-path: app-xray/package-lock.json
 
-      - name: Install dependencies
-        run: cd app && npm ci
+      - name: Build app-xray
+        run: cd app-xray && npm ci && npm run build
 
-      - name: Lint
-        run: cd app && npm run lint
+      - name: Build xray-invoker
+        run: cd lambda/xray-invoker && npm ci && npm run build
 
-      - name: Format check
-        run: cd app && npm run format:check
+      - name: Build xray-dog-fetcher
+        run: cd lambda/xray-dog-fetcher && npm ci && npm run build
 
-  test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: app/package-lock.json
-
-      - name: Run unit tests
-        run: bash ci/run_unit_tests.sh
+      - name: Build xray-s3-writer
+        run: cd lambda/xray-s3-writer && npm ci && npm run build
 
   docker-build:
     runs-on: ubuntu-latest
@@ -52,13 +38,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: app/package-lock.json
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
