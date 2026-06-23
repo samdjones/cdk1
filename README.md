@@ -18,15 +18,13 @@ ECS Fargate frontend  (Node.js Express)
 xray-dog-fetcher Lambda
         ↓  fetch
 dog.ceo public API  (random dog image URL)
-        ↓  SNS publish
-SNS Topic
-        ↓  trigger
+        ↓  Lambda invoke (synchronous)
 xray-s3-writer Lambda
         ↓  PutObject
 S3 Bucket  (image + metadata JSON)
 ```
 
-Every hop produces X-Ray trace segments that stitch into a single end-to-end trace visible in the X-Ray service map.
+Every hop is synchronous end-to-end, so a failure at any point (e.g. a misconfigured `DOG_BUCKET_NAME`) propagates back as an error through the entire chain — making it immediately visible as a red node in the X-Ray service map and as a non-200 response from the invoker.
 
 ## X-Ray Instrumentation
 
