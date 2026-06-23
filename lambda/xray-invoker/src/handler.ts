@@ -29,6 +29,10 @@ export const handler = async (
   console.log(`Frontend responded with status: ${response.status}`);
   console.log(`Response body: ${body}`);
 
+  if (!response.ok) {
+    throw new Error(`Frontend returned ${response.status}: ${body}`);
+  }
+
   return {
     statusCode: response.status,
     headers: {
