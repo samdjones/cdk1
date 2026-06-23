@@ -7,8 +7,6 @@ from aws_cdk import (
     aws_ecs_patterns as ecs_patterns,
     aws_ec2 as ec2,
     aws_s3 as s3,
-    aws_sns as sns,
-    aws_sns_subscriptions as subscriptions,
     aws_iam as iam,
     aws_ecr_assets as ecr_assets,
     Duration,
@@ -45,13 +43,6 @@ class XrayPocStack(Stack):
             versioned=False,
         )
 
-        # ── SNS Topic ──────────────────────────────────────────────────────
-        dog_topic = sns.Topic(
-            self,
-            "DogTopic",
-            display_name="Dog Image Topic",
-        )
-
         # ── Lambda S3 Writer ───────────────────────────────────────────────
         xray_s3_writer_fn = lambda_.Function(
             self,
@@ -71,9 +62,8 @@ class XrayPocStack(Stack):
         )
 
         dog_bucket.grant_write(xray_s3_writer_fn)
-        dog_topic.add_subscription(subscriptions.LambdaSubscription(xray_s3_writer_fn))
 
-        # ── Lambda Backend Proxy (Dog Fetcher) ─────────────────────────────
+        # ── Lambda Dog Fetcher ─────────────────────────────────────────────
         xray_dog_fetcher_fn = lambda_.Function(
             self,
             "XrayDogFetcherFn",
@@ -83,7 +73,7 @@ class XrayPocStack(Stack):
             code=lambda_.Code.from_asset("lambda/xray-dog-fetcher/dist"),
             environment={
                 **common_otel_env,
-                "DOG_SNS_TOPIC_ARN": dog_topic.topic_arn,
+                "S3_WRITER_FUNCTION_NAME": xray_s3_writer_fn.function_name,
             },
             tracing=lambda_.Tracing.ACTIVE,
             layers=[adot_layer],
@@ -91,7 +81,7 @@ class XrayPocStack(Stack):
             memory_size=256,
         )
 
-        dog_topic.grant_publish(xray_dog_fetcher_fn)
+        xray_s3_writer_fn.grant_invoke(xray_dog_fetcher_fn)
 
         # ── VPC ────────────────────────────────────────────────────────────
         vpc = ec2.Vpc(
@@ -252,9 +242,3 @@ class XrayPocStack(Stack):
             description="Dog Fetcher Lambda function name",
         )
 
-        CfnOutput(
-            self,
-            "DogSnsTopicArn",
-            value=dog_topic.topic_arn,
-            description="SNS topic ARN for dog image events",
-        )
