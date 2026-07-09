@@ -2,13 +2,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "=== X-Ray POC Deploy ==="
 echo ""
 
 # ── Install root dev deps (aws-cdk for npx) ───────────────────────────────
 echo "Installing root dev dependencies..."
-cd "$SCRIPT_DIR"
+cd "$REPO_ROOT"
 npm install
 echo "✓ root deps installed"
 

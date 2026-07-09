@@ -1,0 +1,21 @@
+{
+  "name": "alb-app-auth",
+  "version": "1.0.0",
+  "description": "ALB POC ECS backend - auth",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node --esm src/main.ts",
+    "start": "node dist/main.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "express": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  }
+}
