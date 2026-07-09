@@ -8,3 +8,6 @@ __pycache__
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+
+# Local CDK context cache (contains account-specific lookups)
+cdk.context.json
