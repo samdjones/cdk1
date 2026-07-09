@@ -76,7 +76,7 @@ See `x-ray/docs/xray-collector-setup.md` for the full OTel/X-Ray wiring, and `x-
 
 ### alb — AlbPocStack
 
-A single public ALB with one listener routes traffic across 3 independent ECS Fargate backends by path:
+An internal-only ALB (no public IP, `internet_facing=False`) with one listener routes traffic across 3 independent ECS Fargate backends by path; access is via SSM Session Manager port-forwarding through a small bastion EC2 instance (zero inbound security group rules, `AmazonSSMManagedInstanceCore` role) rather than direct internet access:
 
 - `/main/*` → `main` backend
 - `/auth/*` → `auth` backend
