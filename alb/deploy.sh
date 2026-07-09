@@ -33,7 +33,7 @@ CDK_DOCKER=podman npx cdk deploy AlbPocStack \
 
 echo ""
 echo "=== Deploy complete ==="
-echo "Try the path-based routing (replace <alb-dns> with the AlbDnsName output):"
-echo "  curl http://<alb-dns>/main/    # -> main backend"
-echo "  curl http://<alb-dns>/auth/    # -> auth backend"
-echo "  curl http://<alb-dns>/anything # -> default backend"
+echo "The ALB is internal-only. Reach it via an SSM port-forward through the bastion:"
+echo ""
+echo "  ./connect.sh          # terminal 1 - opens localhost:8080 -> internal ALB:80"
+echo "  ./test-routes.sh      # terminal 2 - exercises all 3 path-routing rules"
