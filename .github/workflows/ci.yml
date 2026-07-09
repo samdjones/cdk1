@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  build:
+  build-xray:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,21 +18,21 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: app-xray/package-lock.json
+          cache-dependency-path: x-ray/app-xray/package-lock.json
 
       - name: Build app-xray
-        run: cd app-xray && npm ci && npm run build
+        run: cd x-ray/app-xray && npm ci && npm run build
 
       - name: Build xray-invoker
-        run: cd lambda/xray-invoker && npm ci && npm run build
+        run: cd x-ray/lambda/xray-invoker && npm ci && npm run build
 
       - name: Build xray-dog-fetcher
-        run: cd lambda/xray-dog-fetcher && npm ci && npm run build
+        run: cd x-ray/lambda/xray-dog-fetcher && npm ci && npm run build
 
       - name: Build xray-s3-writer
-        run: cd lambda/xray-s3-writer && npm ci && npm run build
+        run: cd x-ray/lambda/xray-s3-writer && npm ci && npm run build
 
-  docker-build:
+  docker-build-xray:
     runs-on: ubuntu-latest
 
     steps:
@@ -43,4 +43,40 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Docker image
-        run: bash ci/docker_build.sh
+        run: bash x-ray/ci/docker_build.sh
+
+  build-alb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: alb/app/main/package-lock.json
+
+      - name: Build app/main
+        run: cd alb/app/main && npm ci && npm run build
+
+      - name: Build app/auth
+        run: cd alb/app/auth && npm ci && npm run build
+
+      - name: Build app/default
+        run: cd alb/app/default && npm ci && npm run build
+
+  docker-build-alb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker images
+        run: bash alb/ci/docker_build.sh
