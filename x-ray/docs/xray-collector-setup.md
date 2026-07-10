@@ -224,11 +224,33 @@ The propagation flow:
 xray-invoker Lambda
   sets X-Amzn-Trace-Id header on HTTP call to ALB
   → ECS app receives header, continues the trace
-    sets X-Amzn-Trace-Id on Lambda invoke payload
+    invokes xray-dog-fetcher Lambda (AWS SDK InvokeCommand)
     → xray-dog-fetcher Lambda continues the trace
-      sets X-Amzn-Trace-Id on SNS publish message attributes
+      invokes xray-s3-writer Lambda directly (AWS SDK InvokeCommand)
       → xray-s3-writer Lambda continues the trace
 ```
+
+There is no SNS in this chain — `xray-dog-fetcher` calls `xray-s3-writer` with a plain `LambdaClient` `InvokeCommand`, same as the ECS app calls `xray-dog-fetcher`.
+
+### Manual vs. automatic propagation
+
+Most of the chain is automatic — the ADOT auto-instrumentation patches the AWS SDK v3 client so trace context is injected into the outgoing Lambda `Invoke` call for free:
+
+- ECS app → `xray-dog-fetcher` (`app-xray/src/app.ts`)
+- `xray-dog-fetcher` → `xray-s3-writer` (`lambda/xray-dog-fetcher/src/handler.ts`)
+
+Neither of these handlers touches trace headers directly.
+
+The one exception is the first hop, `xray-invoker` → ALB/ECS, which **is done manually in app code** (`lambda/xray-invoker/src/handler.ts`):
+
+```ts
+const traceHeader = process.env._X_AMZN_TRACE_ID;
+const response = await fetch(url, {
+  headers: { ...(traceHeader ? { "X-Amzn-Trace-Id": traceHeader } : {}) },
+});
+```
+
+This is necessary because Node's global `fetch()` is backed by `undici`, which the standard OTel `http`/`https` auto-instrumentation does not cover — without this explicit header, the trace would break (or restart) at this hop. Everywhere else in the chain, letting the AWS SDK instrumentation handle propagation is sufficient.
 
 ---
 
