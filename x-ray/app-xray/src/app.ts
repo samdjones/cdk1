@@ -6,6 +6,22 @@ app.use(express.json());
 
 const lambdaClient = new LambdaClient({});
 const DOG_FETCHER_LAMBDA_NAME = process.env.DOG_FETCHER_LAMBDA_NAME;
+const IDP_URL = process.env.IDP_URL;
+
+// Best-effort side-call to idp over its private CloudMap DNS name - not a
+// readiness gate, just an observable hop in the trace before the real
+// backend calls. A failure here is logged but doesn't fail the request.
+async function checkIdpHealth(): Promise<void> {
+  if (!IDP_URL) {
+    return;
+  }
+  try {
+    const response = await fetch(`${IDP_URL}/idp/health`);
+    console.log(`idp health check: ${response.status}`);
+  } catch (err) {
+    console.error("idp health check failed:", err);
+  }
+}
 
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok" });
@@ -16,6 +32,8 @@ app.get("/fetch-dog", async (_req: Request, res: Response) => {
     res.status(500).json({ error: "DOG_FETCHER_LAMBDA_NAME env var not set" });
     return;
   }
+
+  await checkIdpHealth();
 
   console.log(`Invoking Lambda: ${DOG_FETCHER_LAMBDA_NAME}`);
 
