@@ -24,9 +24,11 @@ WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
+COPY otel-bootstrap.js ./
 
-# OTEL auto-instrumentation via ADOT agent
-ENV NODE_OPTIONS="--require @aws/aws-distro-opentelemetry-node-agent/register"
+# OTEL auto-instrumentation via ADOT agent, wrapped by otel-bootstrap.js to
+# give the ECS task-credentials HTTP call a readable X-Ray span name
+ENV NODE_OPTIONS="--require /app/otel-bootstrap.js"
 
 # OTEL collector sidecar endpoint (localhost since containers share network in Fargate awsvpc mode)
 ENV OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"

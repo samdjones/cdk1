@@ -152,7 +152,7 @@ class XrayPocStack(Stack):
                 "OTEL_PROPAGATORS": "xray",
                 "AWS_XRAY_DAEMON_ADDRESS": "localhost:2000",
                 "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "true",
-                "NODE_OPTIONS": "--require @aws/aws-distro-opentelemetry-node-autoinstrumentation/register",
+                "NODE_OPTIONS": "--require /app/otel-bootstrap.js",
             },
             logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-app"),
             essential=True,
@@ -175,6 +175,21 @@ class XrayPocStack(Stack):
         # Expose OTLP gRPC and HTTP ports (reachable via localhost in Fargate awsvpc mode)
         otel_container.add_port_mappings(ecs.PortMapping(container_port=4317))
         otel_container.add_port_mappings(ecs.PortMapping(container_port=4318))
+
+        # ── Envoy sidecar (pass-through reverse proxy in front of the app) ──
+        envoy_image = ecs.ContainerImage.from_asset("envoy")
+
+        envoy_container = task_definition.add_container(
+            "EnvoyProxy",
+            image=envoy_image,
+            logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-envoy"),
+            essential=True,
+        )
+        envoy_container.add_port_mappings(ecs.PortMapping(container_port=8080))
+
+        # Envoy now fronts the task, so it - not the app container - is the
+        # ALB's target.
+        task_definition.default_container = envoy_container
 
         # ── ALB Fargate Service ────────────────────────────────────────────
         fargate_service = ecs_patterns.ApplicationLoadBalancedFargateService(
