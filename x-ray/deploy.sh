@@ -59,5 +59,5 @@ CDK_DOCKER=podman npx cdk deploy XrayPocStack \
 
 echo ""
 echo "=== Deploy complete ==="
-echo "To trigger a trace, invoke the xray-invoker Lambda from the AWS Console or CLI:"
-echo "  aws lambda invoke --function-name xray-invoker /tmp/response.json && cat /tmp/response.json"
+echo "To trigger a trace, run:"
+echo "  ./trigger-trace.sh"

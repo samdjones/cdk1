@@ -67,8 +67,8 @@ This tells the Lambda service to create an X-Ray trace segment for every invocat
 
 ### What gets traced automatically
 
-- Outbound HTTP/HTTPS requests (including `fetch()` calls to dog.ceo)
-- AWS SDK v3 client calls (SNS `PublishCommand`, S3 `PutObjectCommand`)
+- Outbound HTTP/HTTPS requests
+- AWS SDK v3 client calls (Lambda `InvokeCommand`, S3 `PutObjectCommand`)
 - The Lambda invocation itself (as the root segment)
 
 ### Environment variables summary
@@ -112,11 +112,11 @@ otel_container.add_port_mappings(ecs.PortMapping(container_port=4318))  # HTTP
 
 The command `--config=/etc/ecs/ecs-default-config.yaml` references a config file **baked into the collector image** by AWS. You don't provide this file — it's already there. It configures the collector to:
 
-- **Receive**: OTLP traces on ports 4317 (gRPC) and 4318 (HTTP)
+- **Receive**: OTLP traces on ports 4317 (gRPC) and 4318 (HTTP), *and* legacy X-Ray daemon protocol on UDP port 2000
 - **Process**: Batch traces for efficiency
 - **Export**: Send traces to AWS X-Ray using the `awsxray` exporter, and metrics to CloudWatch using the `awsemf` exporter
 
-The config looks roughly like this (for reference — it's inside the image):
+The config (confirmed against the actual [`ecs-default-config.yaml`](https://github.com/aws-observability/aws-otel-collector/blob/main/config/ecs/ecs-default-config.yaml) in the `aws-otel-collector` repo) looks like this:
 
 ```yaml
 receivers:
@@ -126,6 +126,9 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+  awsxray:
+    endpoint: 0.0.0.0:2000
+    transport: udp
 
 processors:
   batch:
@@ -139,7 +142,7 @@ exporters:
 service:
   pipelines:
     traces:
-      receivers: [otlp]
+      receivers: [otlp, awsxray]
       processors: [batch]
       exporters: [awsxray]
     metrics:
@@ -148,25 +151,30 @@ service:
       exporters: [awsemf]
 ```
 
+The `awsxray` UDP receiver on port 2000 is a compatibility shim for tools that speak the classic X-Ray daemon wire protocol instead of OTLP — that's what `AWS_XRAY_DAEMON_ADDRESS=localhost:2000` on the app container is for (unused fallback, since the app exports via OTLP to port 4317), and it's what Envoy's native X-Ray tracer uses to submit its own segments. See [`docs/envoy.md`](envoy.md).
+
 ### App container: ADOT Node.js agent
 
-The Express app loads the ADOT instrumentation agent via `NODE_OPTIONS`:
+The Express app loads the ADOT instrumentation agent via `NODE_OPTIONS`, wrapped by a small local bootstrap file instead of requiring the package directly:
 
 ```dockerfile
 # app-xray/Dockerfile
-ENV NODE_OPTIONS="--require @aws/aws-distro-opentelemetry-node-agent/register"
+ENV NODE_OPTIONS="--require /app/otel-bootstrap.js"
 ```
 
-This is also set in the CDK task definition environment:
+This is also set (and takes precedence, since ECS task-level environment variables override the image's `ENV` of the same name) in the CDK task definition environment:
 
 ```python
-"NODE_OPTIONS": "--require @aws/aws-distro-opentelemetry-node-agent/register",
+"NODE_OPTIONS": "--require /app/otel-bootstrap.js",
 ```
 
-The `register` script initialises the OTel Node.js SDK and patches:
+`otel-bootstrap.js` (`app-xray/otel-bootstrap.js`) requires `@aws/aws-distro-opentelemetry-node-autoinstrumentation/register` itself — same effect as requiring it directly — then reaches into the array of instrumentations it exports to patch `@opentelemetry/instrumentation-http`'s config via its public `setConfig()`/`getConfig()` API. It adds a `requestHook` that renames one specific span: the ECS task-credentials call (`GET http://169.254.170.2/v2/credentials/<id>`) that the AWS SDK makes before every signed request to fetch the task role's temporary credentials. Without this, that call shows up in the X-Ray service map as a bare `169.254.170.2:80` node; with it, the span is renamed and gets a `peer.service` attribute of `ecs-task-credentials`, which is what the AWS X-Ray OTel exporter uses to label a remote node it doesn't otherwise recognize as a named AWS API call. This is unrelated to application logic — it happens on every AWS SDK call regardless of what the app is doing.
+
+The underlying `register` script (whichever way it's loaded) initialises the OTel Node.js SDK and patches:
 - `express` — HTTP server spans (each incoming request becomes a span)
 - `@aws-sdk/*` — AWS SDK client calls (Lambda invocations become child spans)
-- `http`/`https`/`fetch` — outbound HTTP calls
+- `http`/`https` — outbound HTTP calls
+- `undici` — outbound global `fetch()` calls (see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below — this matters because it's *not* true of the Lambda ADOT layer)
 
 The agent is configured to send traces to the sidecar via:
 
@@ -201,20 +209,22 @@ Lambda functions get X-Ray permissions automatically when `tracing=ACTIVE` is se
 ### Environment variables summary
 
 ```
-NODE_OPTIONS=--require @aws/aws-distro-opentelemetry-node-agent/register
+NODE_OPTIONS=--require /app/otel-bootstrap.js        # wraps the ADOT register script, see above
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317   # sidecar gRPC endpoint
 OTEL_EXPORTER_OTLP_PROTOCOL=grpc
 OTEL_SERVICE_NAME=xray-frontend                      # appears in X-Ray service map
 OTEL_PROPAGATORS=xray                                # X-Ray trace context propagation
-AWS_XRAY_DAEMON_ADDRESS=localhost:2000               # fallback daemon address
+AWS_XRAY_DAEMON_ADDRESS=localhost:2000               # fallback daemon address; also where Envoy's native tracer sends segments, see docs/envoy.md
 OTEL_AWS_APPLICATION_SIGNALS_ENABLED=true
 ```
+
+`xray-idp` (`app-idp/`) uses the same collector-sidecar pattern with the same environment variables (`OTEL_SERVICE_NAME=xray-idp`), minus the `otel-bootstrap.js` wrapper — it requires `@aws/aws-distro-opentelemetry-node-autoinstrumentation/register` directly, since it has no Envoy sidecar and no need for the credentials-span renaming.
 
 ---
 
 ## Trace Context Propagation
 
-For a trace to span the full chain (Invoker → ECS → Dog Fetcher → S3 Writer), each hop must pass the trace context forward.
+For a trace to span the full chain (Invoker → Envoy → ECS → Dog Fetcher → S3 Writer, with a side branch to idp), each hop must pass the trace context forward.
 
 `OTEL_PROPAGATORS=xray` tells the ADOT agent to use **AWS X-Ray trace context format** (`X-Amzn-Trace-Id` header) when propagating context over HTTP and when invoking Lambda functions. This is the format X-Ray natively understands, so traces from different services stitch together into a single service map in the AWS Console.
 
@@ -222,15 +232,42 @@ The propagation flow:
 
 ```
 xray-invoker Lambda
-  sets X-Amzn-Trace-Id header on HTTP call to ALB
-  → ECS app receives header, continues the trace
-    invokes xray-dog-fetcher Lambda (AWS SDK InvokeCommand)
-    → xray-dog-fetcher Lambda continues the trace
-      invokes xray-s3-writer Lambda directly (AWS SDK InvokeCommand)
-      → xray-s3-writer Lambda continues the trace
+  sets X-Amzn-Trace-Id header on HTTP call to the ALB
+  → Envoy (native X-Ray tracer) receives header, creates its own segment,
+    re-parents the header before forwarding to the app - see "Envoy" below
+    → ECS app (xray-frontend) receives header, continues the trace
+        side-call: GET idp.xray.local:3000/idp/health (CloudMap, bypasses the ALB)
+        → xray-idp continues the trace, unrelated to the dog-fetch below
+      invokes xray-dog-fetcher Lambda (AWS SDK InvokeCommand)
+      → xray-dog-fetcher Lambda continues the trace
+        invokes xray-s3-writer Lambda directly (AWS SDK InvokeCommand)
+        → xray-s3-writer Lambda continues the trace
 ```
 
 There is no SNS in this chain — `xray-dog-fetcher` calls `xray-s3-writer` with a plain `LambdaClient` `InvokeCommand`, same as the ECS app calls `xray-dog-fetcher`.
+
+### Envoy: participating in the trace
+
+A plain reverse proxy with no tracing configured is invisible to X-Ray — it forwards the `X-Amzn-Trace-Id` header unchanged (any HTTP proxy does that by default; headers it doesn't recognize just pass through), but it never creates a segment of its own, so it never shows up as a node in the service map. Making Envoy actually *participate* in the trace — rather than just transparently carrying the header through it — takes one extra piece of config beyond the pass-through routing: a native tracer provider on the HTTP connection manager (`x-ray/envoy/envoy.yaml`):
+
+```yaml
+tracing:
+  provider:
+    name: envoy.tracers.xray
+    typed_config:
+      "@type": type.googleapis.com/envoy.config.trace.v3.XRayConfig
+      segment_name: envoy-proxy
+      daemon_endpoint:
+        protocol: UDP
+        address: 127.0.0.1
+        port_value: 2000
+```
+
+`envoy.tracers.xray` is Envoy's built-in X-Ray tracer (the same mechanism AWS App Mesh uses under the hood) — unlike Envoy's generic `envoy.tracers.opentelemetry` provider, it natively reads and writes the `X-Amzn-Trace-Id` header format, so it stitches into the same trace as everything else here instead of starting a disconnected W3C-propagated trace of its own. It sends its segment via the classic UDP X-Ray-daemon protocol to `127.0.0.1:2000` — the OTel collector sidecar's `awsxray` receiver described above, which was already running for the `AWS_XRAY_DAEMON_ADDRESS` fallback but wasn't previously being used by anything.
+
+`daemon_endpoint` has to be spelled out explicitly. Envoy's own docs say it "defaults to 127.0.0.1:2000" when unset, but that default apparently only applies at a different layer than an entirely-omitted YAML field — leaving it out produced `X-Ray daemon endpoint must be a UDP socket address` from `envoy --mode validate`. Caught locally before ever touching the live stack; see [`docs/envoy.md`](envoy.md) for how that was verified.
+
+Once configured, Envoy generates a real child segment on every request and **re-parents the trace before forwarding it on** — verified locally by sending a request with a fake `Parent` ID and observing the outgoing request to the app carry a *different* `Parent` (Envoy's own new segment ID), same `Root` (trace ID). That's the mechanism that makes it appear as a genuine hop between the ALB and the app in the X-Ray service map, not just a pass-through.
 
 ### Manual vs. automatic propagation
 
@@ -241,7 +278,7 @@ Most of the chain is automatic — the ADOT auto-instrumentation patches the AWS
 
 Neither of these handlers touches trace headers directly.
 
-The one exception is the first hop, `xray-invoker` → ALB/ECS, which **is done manually in app code** (`lambda/xray-invoker/src/handler.ts`):
+The one exception is the first hop, `xray-invoker` → ALB, which **is done manually in app code** (`lambda/xray-invoker/src/handler.ts`):
 
 ```ts
 const traceHeader = process.env._X_AMZN_TRACE_ID;
@@ -250,7 +287,9 @@ const response = await fetch(url, {
 });
 ```
 
-This is necessary because Node's global `fetch()` is backed by `undici`, which the standard OTel `http`/`https` auto-instrumentation does not cover — without this explicit header, the trace would break (or restart) at this hop. Everywhere else in the chain, letting the AWS SDK instrumentation handle propagation is sufficient.
+This is necessary because Node's global `fetch()` is backed by `undici`, and the **Lambda ADOT layer's** bundled instrumentation set doesn't cover it — without this explicit header, the trace would break (or restart) at this hop.
+
+This is specific to the Lambda layer, not a general Node.js/OTel limitation: `xray-frontend`'s own side-call to idp (`checkIdpHealth()` in `app-xray/src/app.ts`) uses plain `fetch()` too, with no manual header handling, and it propagates correctly — confirmed in a real trace. The npm-installed `@aws/aws-distro-opentelemetry-node-autoinstrumentation` package used by the ECS apps bundles `@opentelemetry/instrumentation-undici` by default, so `fetch()` calls made from `app-xray` or `app-idp` are covered automatically; the Lambda layer (`aws-otel-nodejs-amd64-ver-1-18-1`) is a different, older bundled distribution that isn't.
 
 ---
 
