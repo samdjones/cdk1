@@ -41,6 +41,16 @@ Every hop from the invoker down through S3 is synchronous end-to-end, so a failu
 
 See [`docs/xray-collector-setup.md`](docs/xray-collector-setup.md) for the full instrumentation writeup, [`docs/envoy.md`](docs/envoy.md) for the Envoy sidecar, and [`docs/cloudmap.md`](docs/cloudmap.md) for the CloudMap service discovery setup behind the idp side-call.
 
+## Stacks
+
+Despite being one demo, this deploys as three CloudFormation stacks instead of one:
+
+- **`XraySharedStack`** — VPC, the shared ALB (listener only, no targets), CloudMap namespace
+- **`XrayIdpStack`** — the `xray-idp` cluster/task/service, registered on the ALB and in CloudMap
+- **`XrayFrontendStack`** — the `xray-frontend` cluster/task/service, the three Lambdas, S3
+
+`XrayIdpStack` depends on `XraySharedStack`; `XrayFrontendStack` depends on both. `cdk deploy --all`/`cdk destroy --all` (what `deploy.sh`/`destroy.sh` use) handle the ordering automatically. This split exists for learning purposes — see [`docs/multi-stack.md`](docs/multi-stack.md) for why it's structured this way and the non-obvious CDK mechanics a shared ALB across stacks requires.
+
 ## Prerequisites
 
 - Node.js 22+
@@ -52,9 +62,9 @@ See [`docs/xray-collector-setup.md`](docs/xray-collector-setup.md) for the full 
 ## Deploy / Destroy
 
 ```bash
-npm install                                                        # Install aws-cdk dev dep
-./deploy.sh                                                        # Build all components + deploy
-npx cdk destroy XrayPocStack --app "python iac/app_xray.py"       # Destroy the stack
+npm install                                                          # Install aws-cdk dev dep
+./deploy.sh                                                          # Build all components + deploy all 3 stacks
+npx cdk destroy --all --app "python iac/app_xray.py"                # Destroy all 3 stacks
 ```
 
 ## Trigger a Trace
@@ -77,15 +87,19 @@ x-ray/
 │   ├── xray-dog-fetcher/   # Fetches dog image, invokes s3-writer
 │   └── xray-s3-writer/     # Writes image to S3
 ├── iac/
-│   ├── xray_poc/           # XrayPocStack CDK definition
-│   └── app_xray.py         # CDK entry point
+│   ├── xray_poc/
+│   │   ├── shared_stack.py   # XraySharedStack: VPC, ALB, CloudMap namespace
+│   │   ├── idp_stack.py      # XrayIdpStack
+│   │   └── frontend_stack.py # XrayFrontendStack
+│   └── app_xray.py         # CDK entry point (instantiates all 3 stacks)
 ├── ci/
 │   ├── docker_build.sh
 │   └── run_unit_tests.sh
 ├── docs/
 │   ├── xray-collector-setup.md
 │   ├── envoy.md
-│   └── cloudmap.md
+│   ├── cloudmap.md
+│   └── multi-stack.md
 ├── deploy.sh
 ├── destroy.sh
 └── trigger-trace.sh

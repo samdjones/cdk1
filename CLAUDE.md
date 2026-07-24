@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Structure
 
-This repo hosts two independent, disposable AWS CDK demo stacks, each fully self-contained:
+This repo hosts two independent, disposable AWS CDK demos, each fully self-contained:
 
-- **x-ray/** — end-to-end distributed tracing (X-Ray/OTel) across a Lambda trigger, an ECS Fargate app, two more Lambdas, and S3.
-- **alb/** — an ALB doing path-based routing across 3 ECS Fargate backends (`main`, `auth`, `default`).
+- **x-ray/** — end-to-end distributed tracing (X-Ray/OTel) across a Lambda trigger, an Envoy-fronted ECS Fargate app, a second independent ECS Fargate backend reached via CloudMap, two more Lambdas, and S3. Deploys as three CloudFormation stacks (`XraySharedStack`, `XrayIdpStack`, `XrayFrontendStack`).
+- **alb/** — an ALB doing path-based routing across 3 ECS Fargate backends (`main`, `auth`, `default`). A single stack (`AlbPocStack`).
 
 Every command below is run from *within* the relevant stack's subdirectory (`x-ray/` or `alb/`), not from the repo root, unless noted otherwise. The repo root only holds a shared `package.json` (the `aws-cdk` CLI devDependency, resolved via `npx` from either subdirectory).
 
@@ -18,8 +18,8 @@ Every command below is run from *within* the relevant stack's subdirectory (`x-r
 Each stack has its own deploy/destroy scripts that build its app(s)/lambda(s) and deploy its CDK stack.
 
 ```bash
-cd x-ray && ./deploy.sh     # Build app-xray + 3 lambdas, deploy XrayPocStack
-cd x-ray && ./destroy.sh    # Destroy XrayPocStack
+cd x-ray && ./deploy.sh     # Build app-xray + app-idp + 3 lambdas, deploy all 3 stacks (cdk deploy --all)
+cd x-ray && ./destroy.sh    # Destroy all 3 stacks (cdk destroy --all)
 
 cd alb && ./deploy.sh       # Build main/auth/default apps, deploy AlbPocStack
 cd alb && ./destroy.sh      # Destroy AlbPocStack
@@ -57,22 +57,28 @@ Run from each stack's own `iac/` directory (`x-ray/iac/` or `alb/iac/`), each wi
 ```bash
 source .venv/bin/activate
 pip install -r requirements.txt
-npx cdk synth --app "python app_xray.py"   # or app_alb.py for the alb stack
-npx cdk deploy --app "python app_xray.py"
-npx cdk diff --app "python app_xray.py"
+npx cdk synth --app "python app_xray.py"          # or app_alb.py for the alb stack
+npx cdk deploy --all --app "python app_xray.py"   # x-ray has 3 stacks; --all deploys them in order
+npx cdk diff --all --app "python app_xray.py"
 ```
 
 ## Architecture
 
-### x-ray — XrayPocStack
+### x-ray — XraySharedStack / XrayIdpStack / XrayFrontendStack
 
-A trigger Lambda (`xray-invoker`) makes an HTTP call to an ECS Fargate Express app, which invokes a `xray-dog-fetcher` Lambda that calls the public Dog CEO API and then directly invokes `xray-s3-writer` to persist the result to S3. Every hop is instrumented for distributed tracing:
+A trigger Lambda (`xray-invoker`) calls a shared public ALB, which path-routes `/idp` and `/idp/*` to a `xray-idp` Next.js backend and everything else to a pass-through Envoy sidecar in front of an `xray-frontend` Express app. Before doing its own work, `xray-frontend` makes a best-effort side-call to `xray-idp` over CloudMap (bypassing the ALB), then invokes a `xray-dog-fetcher` Lambda that calls the public Dog CEO API and directly invokes `xray-s3-writer` to persist the result to S3. Every hop is instrumented for distributed tracing, including the Envoy hop itself:
 
 - **Lambdas** — X-Ray active tracing + ADOT Lambda layer (`AWS_LAMBDA_EXEC_WRAPPER=/opt/otel-handler`).
-- **ECS Fargate** — AWS OTEL Collector sidecar exporting to X-Ray; app container loads the ADOT Node.js agent via `NODE_OPTIONS`.
-- **Components**: VPC (2 AZs, public/private subnets), ECS cluster + Fargate service behind a public ALB (`ecs_patterns.ApplicationLoadBalancedFargateService`, fully public — no CloudFront), 3 Lambda functions, 1 S3 bucket.
+- **ECS Fargate** (`xray-frontend`, `xray-idp`) — AWS OTEL Collector sidecar exporting to X-Ray; each app container loads the ADOT Node.js agent via `NODE_OPTIONS`.
+- **Envoy** — pass-through reverse proxy in front of `xray-frontend`, participates in the trace via its native `envoy.tracers.xray` provider.
 
-See `x-ray/docs/xray-collector-setup.md` for the full OTel/X-Ray wiring, and `x-ray/iac/xray_poc/xray_stack.py` for the stack definition.
+Deploys as three CloudFormation stacks for learning purposes (a single stack works fine at this scale; the split exists to demonstrate cross-stack CDK patterns):
+
+- **`XraySharedStack`** — VPC (2 AZs, public/private subnets), the public ALB + listener (static default action, no targets), CloudMap private DNS namespace.
+- **`XrayIdpStack`** — `xray-idp` cluster/task/service, registered on the shared ALB and in CloudMap. Depends on `XraySharedStack`.
+- **`XrayFrontendStack`** — `xray-frontend` cluster/task/service (with Envoy), the 3 Lambda functions, 1 S3 bucket. Depends on `XraySharedStack` and `XrayIdpStack`.
+
+See `x-ray/docs/xray-collector-setup.md` for the full OTel/X-Ray wiring, `x-ray/docs/envoy.md` and `x-ray/docs/cloudmap.md` for those two components, `x-ray/docs/multi-stack.md` for why/how the 3-stack split works, and `x-ray/iac/xray_poc/` (`shared_stack.py`, `idp_stack.py`, `frontend_stack.py`) for the stack definitions.
 
 ### alb — AlbPocStack
 

@@ -1,5 +1,6 @@
 from aws_cdk import (
     Stack,
+    Duration,
     RemovalPolicy,
     CfnOutput,
     aws_lambda as lambda_,
@@ -7,18 +8,43 @@ from aws_cdk import (
     aws_ec2 as ec2,
     aws_s3 as s3,
     aws_iam as iam,
-    aws_ecr_assets as ecr_assets,
     aws_elasticloadbalancingv2 as elbv2,
-    aws_servicediscovery as servicediscovery,
-    Duration,
 )
 from constructs import Construct
-import os
+
+from xray_poc.shared_stack import XraySharedStack
+from xray_poc.idp_stack import XrayIdpStack
 
 
-class XrayPocStack(Stack):
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+class XrayFrontendStack(Stack):
+    """
+    The xray-frontend backend: its own ECS cluster, task (app + OTel
+    collector + Envoy), and service; the three Lambdas it talks to
+    (invoker, dog-fetcher, s3-writer); and the S3 bucket. Registered on
+    the shared ALB via a catch-all priority rule (not the listener's
+    default action - see XraySharedStack's docstring).
+
+    Depends on XraySharedStack (VPC, ALB listener, CloudMap namespace) and
+    on XrayIdpStack (idp's security group, for the ingress rule that lets
+    this service's CloudMap side-call reach it - see docs/multi-stack.md).
+    That security-group import already forces CDK to deploy XrayIdpStack
+    first; add_dependency() below makes that requirement explicit instead
+    of incidental, matching how the in-task Envoy->app container
+    dependency was made explicit rather than relying on the ALB health
+    check to paper over missing ordering.
+    """
+
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        shared_stack: XraySharedStack,
+        idp_stack: XrayIdpStack,
+        **kwargs,
+    ) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        self.add_dependency(idp_stack)
 
         # ── ADOT Lambda layer ──────────────────────────────────────────────
         adot_layer = lambda_.LayerVersion.from_layer_version_arn(
@@ -84,31 +110,11 @@ class XrayPocStack(Stack):
 
         xray_s3_writer_fn.grant_invoke(xray_dog_fetcher_fn)
 
-        # ── VPC ────────────────────────────────────────────────────────────
-        vpc = ec2.Vpc(
-            self,
-            "XrayVpc",
-            max_azs=2,
-            nat_gateways=1,
-            subnet_configuration=[
-                ec2.SubnetConfiguration(
-                    name="Public",
-                    subnet_type=ec2.SubnetType.PUBLIC,
-                    cidr_mask=24,
-                ),
-                ec2.SubnetConfiguration(
-                    name="Private",
-                    subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
-                    cidr_mask=24,
-                ),
-            ],
-        )
-
         # ── ECS Cluster ────────────────────────────────────────────────────
         cluster = ecs.Cluster(
             self,
             "XrayCluster",
-            vpc=vpc,
+            vpc=shared_stack.vpc,
             container_insights=True,
         )
 
@@ -120,7 +126,6 @@ class XrayPocStack(Stack):
             memory_limit_mib=1024,
         )
 
-        # Grant X-Ray write access to the task role
         task_definition.task_role.add_to_policy(
             iam.PolicyStatement(
                 actions=[
@@ -134,17 +139,14 @@ class XrayPocStack(Stack):
             )
         )
 
-        # Allow the ECS task to invoke the dog fetcher Lambda
         xray_dog_fetcher_fn.grant_invoke(task_definition.task_role)
 
         # ── App container ──────────────────────────────────────────────────
-        app_image = ecs.ContainerImage.from_asset(
-            "app-xray",
-        )
+        idp_url = f"http://{idp_stack.cloud_map_name}.{shared_stack.cloud_map_namespace.namespace_name}:{idp_stack.container_port}"
 
         app_container = task_definition.add_container(
             "AppContainer",
-            image=app_image,
+            image=ecs.ContainerImage.from_asset("app-xray"),
             environment={
                 "DOG_FETCHER_LAMBDA_NAME": xray_dog_fetcher_fn.function_name,
                 "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
@@ -154,6 +156,7 @@ class XrayPocStack(Stack):
                 "AWS_XRAY_DAEMON_ADDRESS": "localhost:2000",
                 "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "true",
                 "NODE_OPTIONS": "--require /app/otel-bootstrap.js",
+                "IDP_URL": idp_url,
             },
             logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-app"),
             essential=True,
@@ -173,27 +176,18 @@ class XrayPocStack(Stack):
                 "AWS_REGION": Stack.of(self).region,
             },
         )
-        # Expose OTLP gRPC and HTTP ports (reachable via localhost in Fargate awsvpc mode)
         otel_container.add_port_mappings(ecs.PortMapping(container_port=4317))
         otel_container.add_port_mappings(ecs.PortMapping(container_port=4318))
 
         # ── Envoy sidecar (pass-through reverse proxy in front of the app) ──
-        envoy_image = ecs.ContainerImage.from_asset("envoy")
-
         envoy_container = task_definition.add_container(
             "EnvoyProxy",
-            image=envoy_image,
+            image=ecs.ContainerImage.from_asset("envoy"),
             logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-envoy"),
             essential=True,
         )
         envoy_container.add_port_mappings(ecs.PortMapping(container_port=8080))
 
-        # ECS starts all containers in a task concurrently by default: without
-        # this, Envoy's listener can come up before the app is listening on
-        # 8000, and proxied requests fail until it catches up. START is the
-        # only condition available here since AppContainer has no
-        # container-level healthCheck - the default condition is HEALTHY,
-        # which ECS rejects unless the depended-on container defines one.
         envoy_container.add_container_dependencies(
             ecs.ContainerDependency(
                 container=app_container,
@@ -205,106 +199,8 @@ class XrayPocStack(Stack):
         # ALB's target.
         task_definition.default_container = envoy_container
 
-        # ── ECS Cluster (idp) ─────────────────────────────────────────────────
-        idp_cluster = ecs.Cluster(
-            self,
-            "XrayIdpCluster",
-            vpc=vpc,
-            container_insights=True,
-        )
-
-        # ── CloudMap private DNS namespace ───────────────────────────────────
-        # Lets the frontend resolve the idp service by name (idp.xray.local)
-        # over a private call, without going through the public ALB.
-        cloud_map_namespace = servicediscovery.PrivateDnsNamespace(
-            self,
-            "XrayNamespace",
-            name="xray.local",
-            vpc=vpc,
-        )
-
-        # ── ECS Task Definition (idp) ────────────────────────────────────────
-        idp_task_definition = ecs.FargateTaskDefinition(
-            self,
-            "XrayIdpTaskDef",
-            cpu=512,
-            memory_limit_mib=1024,
-        )
-
-        idp_task_definition.task_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=[
-                    "xray:PutTraceSegments",
-                    "xray:PutTelemetryRecords",
-                    "xray:GetSamplingRules",
-                    "xray:GetSamplingTargets",
-                    "xray:GetSamplingStatisticSummaries",
-                ],
-                resources=["*"],
-            )
-        )
-
-        idp_app_container = idp_task_definition.add_container(
-            "IdpAppContainer",
-            image=ecs.ContainerImage.from_asset("app-idp"),
-            environment={
-                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
-                "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
-                "OTEL_SERVICE_NAME": "xray-idp",
-                "OTEL_PROPAGATORS": "xray",
-                "AWS_XRAY_DAEMON_ADDRESS": "localhost:2000",
-                "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "true",
-            },
-            logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-idp-app"),
-            essential=True,
-        )
-        idp_app_container.add_port_mappings(ecs.PortMapping(container_port=3000))
-
-        # OTEL Collector sidecar - same role as the frontend's, no Envoy here.
-        idp_otel_container = idp_task_definition.add_container(
-            "IdpOtelCollector",
-            image=ecs.ContainerImage.from_registry(
-                "public.ecr.aws/aws-observability/aws-otel-collector:latest"
-            ),
-            command=["--config=/etc/ecs/ecs-default-config.yaml"],
-            logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-idp-otel"),
-            essential=False,
-            environment={
-                "AWS_REGION": Stack.of(self).region,
-            },
-        )
-        idp_otel_container.add_port_mappings(ecs.PortMapping(container_port=4317))
-        idp_otel_container.add_port_mappings(ecs.PortMapping(container_port=4318))
-
-        idp_cloud_map_name = "idp"
-        idp_container_port = 3000
-
-        idp_service = ecs.FargateService(
-            self,
-            "XrayIdpService",
-            cluster=idp_cluster,
-            task_definition=idp_task_definition,
-            desired_count=1,
-            cloud_map_options=ecs.CloudMapOptions(
-                name=idp_cloud_map_name,
-                cloud_map_namespace=cloud_map_namespace,
-                dns_record_type=servicediscovery.DnsRecordType.A,
-                container_port=idp_container_port,
-            ),
-            # The "60s if a load balancer is in use" default only applies
-            # when load balancers are passed at construction time; attaching
-            # via listener.add_targets() afterward doesn't get it for free.
-            health_check_grace_period=Duration.seconds(60),
-        )
-
-        # The frontend's side-call to idp goes straight to idp's task ENI via
-        # CloudMap, bypassing the ALB, so it needs its own SG rule - the ALB
-        # target group wiring below only opens ingress from the ALB.
-        idp_url = f"http://{idp_cloud_map_name}.{cloud_map_namespace.namespace_name}:{idp_container_port}"
-        app_container.add_environment("IDP_URL", idp_url)
-
-        # ── Frontend ECS Service ─────────────────────────────────────────────
-        frontend_service = ecs.FargateService(
+        # ── ECS Service ──────────────────────────────────────────────────────
+        service = ecs.FargateService(
             self,
             "XrayFargateService",
             cluster=cluster,
@@ -313,49 +209,74 @@ class XrayPocStack(Stack):
             health_check_grace_period=Duration.seconds(60),
         )
 
-        idp_service.connections.allow_from(
-            frontend_service,
-            ec2.Port.tcp(idp_container_port),
-            "Allow the frontend to call idp /idp/health via CloudMap",
-        )
-
-        # idp must be up and stable before the frontend deploys, since the
-        # frontend calls idp's health endpoint before serving traffic. Scoped
-        # to just the two ECS::Service resources (not construct-level
-        # add_dependency) - a construct-level dependency fans out to every
-        # resource in both subtrees, including the SG ingress rule above
-        # that legitimately references frontend's own SG, which creates a
-        # real cycle.
-        frontend_service.node.default_child.add_dependency(idp_service.node.default_child)
-
-        # ── Shared public ALB with path-based routing ────────────────────────
-        alb = elbv2.ApplicationLoadBalancer(
+        # Reach across to XrayIdpStack's security group and add an ingress
+        # rule from this service's own SG. Using a local, mutable reference
+        # (SecurityGroup.from_security_group_id) rather than the real object
+        # keeps the new SecurityGroupIngress resource here in
+        # XrayFrontendStack, not in XrayIdpStack - the opposite direction
+        # would create a stack cycle, since XrayFrontendStack already has to
+        # deploy after XrayIdpStack. See docs/multi-stack.md.
+        idp_security_group = ec2.SecurityGroup.from_security_group_id(
             self,
-            "SharedAlb",
-            vpc=vpc,
-            internet_facing=True,
+            "IdpSecurityGroup",
+            idp_stack.security_group.security_group_id,
         )
-        listener = alb.add_listener("Listener", port=80, open=True)
-
-        listener.add_targets(
-            "IdpTargetGroup",
-            port=80,
-            targets=[idp_service],
-            priority=10,
-            conditions=[elbv2.ListenerCondition.path_patterns(["/idp", "/idp/*"])],
-            health_check=elbv2.HealthCheck(path="/idp/health", healthy_http_codes="200"),
+        idp_security_group.add_ingress_rule(
+            peer=service.connections.security_groups[0],
+            connection=ec2.Port.tcp(idp_stack.container_port),
+            description="Allow the frontend to call idp /idp/health via CloudMap",
         )
 
-        # No priority/conditions ⇒ becomes the listener's default action (catch-all "*")
-        listener.add_targets(
+        # ── ALB registration ─────────────────────────────────────────────────
+        # Same cross-stack-listener pattern as XrayIdpStack (constructed
+        # TargetGroup + add_target_groups(), not add_targets() - see
+        # XrayIdpStack's comment for why), but as a catch-all priority rule
+        # rather than the listener's default action - see XraySharedStack's
+        # docstring for why that specifically can't move to this stack.
+        #
+        # Also imports the ALB's security group locally rather than reusing
+        # shared_stack.alb_security_group directly, same reasoning as
+        # XrayIdpStack: this stack already depends on SharedStack, so a
+        # resource that referenced it back would cycle.
+        #
+        # allow_all_outbound=False: the real ALB security group has no
+        # blanket allow-all-outbound rule, so the default (True) on this
+        # import would make CDK skip the egress rule the ALB actually needs
+        # to reach the frontend - see XrayIdpStack's comment, where this
+        # exact gap caused ALB health checks to time out against a live
+        # deploy.
+        alb_security_group = ec2.SecurityGroup.from_security_group_id(
+            self,
+            "AlbSecurityGroup",
+            shared_stack.alb_security_group.security_group_id,
+            allow_all_outbound=False,
+        )
+
+        listener = elbv2.ApplicationListener.from_application_listener_attributes(
+            self,
+            "SharedListener",
+            listener_arn=shared_stack.listener.listener_arn,
+            security_group=alb_security_group,
+        )
+
+        target_group = elbv2.ApplicationTargetGroup(
+            self,
             "FrontendTargetGroup",
+            vpc=shared_stack.vpc,
             port=80,
-            targets=[frontend_service],
+            targets=[service],
             health_check=elbv2.HealthCheck(path="/health", healthy_http_codes="200"),
         )
 
+        listener.add_target_groups(
+            "FrontendTargetGroupAttachment",
+            target_groups=[target_group],
+            priority=100,
+            conditions=[elbv2.ListenerCondition.path_patterns(["/*"])],
+        )
+
         # ── Lambda Invoker ─────────────────────────────────────────────────
-        alb_url = f"http://{alb.load_balancer_dns_name}/fetch-dog"
+        alb_url = f"http://{shared_stack.alb.load_balancer_dns_name}/fetch-dog"
 
         xray_invoker_fn = lambda_.Function(
             self,
@@ -377,16 +298,6 @@ class XrayPocStack(Stack):
         # ── CloudFormation Outputs ─────────────────────────────────────────
         CfnOutput(
             self,
-            "AlbDnsName",
-            value=alb.load_balancer_dns_name,
-            description=(
-                "Shared ALB DNS name - default path routes to xray-frontend, "
-                "/idp and /idp/* route to xray-idp"
-            ),
-        )
-
-        CfnOutput(
-            self,
             "InvokerLambdaName",
             value=xray_invoker_fn.function_name,
             description="Lambda Invoker function name - trigger this to start the X-Ray trace",
@@ -405,4 +316,3 @@ class XrayPocStack(Stack):
             value=xray_dog_fetcher_fn.function_name,
             description="Dog Fetcher Lambda function name",
         )
-
