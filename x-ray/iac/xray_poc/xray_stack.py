@@ -188,6 +188,19 @@ class XrayPocStack(Stack):
         )
         envoy_container.add_port_mappings(ecs.PortMapping(container_port=8080))
 
+        # ECS starts all containers in a task concurrently by default: without
+        # this, Envoy's listener can come up before the app is listening on
+        # 8000, and proxied requests fail until it catches up. START is the
+        # only condition available here since AppContainer has no
+        # container-level healthCheck - the default condition is HEALTHY,
+        # which ECS rejects unless the depended-on container defines one.
+        envoy_container.add_container_dependencies(
+            ecs.ContainerDependency(
+                container=app_container,
+                condition=ecs.ContainerDependencyCondition.START,
+            )
+        )
+
         # Envoy now fronts the task, so it - not the app container - is the
         # ALB's target.
         task_definition.default_container = envoy_container
