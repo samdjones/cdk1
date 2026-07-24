@@ -49,11 +49,14 @@ npm run build
 echo "✓ app-idp built"
 
 # ── CDK Deploy ────────────────────────────────────────────────────────────
+# --all deploys XraySharedStack, XrayIdpStack, XrayFrontendStack in
+# dependency order (CDK computes this from the stacks' cross-stack
+# references and explicit add_dependency() calls - see docs/multi-stack.md).
 echo ""
-echo "Deploying XrayPocStack..."
+echo "Deploying XraySharedStack, XrayIdpStack, XrayFrontendStack..."
 cd "$SCRIPT_DIR"
 source iac/.venv/bin/activate
-CDK_DOCKER=podman npx cdk deploy XrayPocStack \
+CDK_DOCKER=podman npx cdk deploy --all \
   --require-approval never \
   --app "python iac/app_xray.py"
 
