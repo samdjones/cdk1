@@ -1,0 +1,60 @@
+static_resources:
+  listeners:
+    - name: ingress
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8080 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                codec_type: AUTO
+                # Send spans to the OTEL collector sidecar's X-Ray-daemon-
+                # compatible UDP receiver (127.0.0.1:2000, the XRayConfig
+                # default) so Envoy joins the same X-Ray trace as the app
+                # and Lambdas, using the same X-Amzn-Trace-Id propagation.
+                tracing:
+                  provider:
+                    name: envoy.tracers.xray
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.config.trace.v3.XRayConfig
+                      segment_name: envoy-proxy
+                      daemon_endpoint:
+                        protocol: UDP
+                        address: 127.0.0.1
+                        port_value: 2000
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: app
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: app_cluster
+                            # Match the ALB's idle timeout; the app chains
+                            # ECS -> Lambda -> dog.ceo -> Lambda -> S3 calls,
+                            # which can run well past Envoy's 15s default.
+                            timeout: 60s
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: app_cluster
+      connect_timeout: 5s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: app_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: 127.0.0.1, port_value: 8000 }
+
+admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 9901 }

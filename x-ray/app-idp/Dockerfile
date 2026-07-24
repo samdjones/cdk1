@@ -8,8 +8,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-COPY tsconfig.json ./
-COPY src/ ./src/
+COPY tsconfig.json next.config.js ./
+COPY pages/ ./pages/
 RUN npm run build
 
 # Remove devDependencies for production
@@ -21,21 +21,20 @@ FROM node:22-alpine AS runtime
 WORKDIR /app
 
 # Copy built artifacts and production node_modules
-COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
-COPY otel-bootstrap.js ./
+COPY --from=builder /app/next.config.js ./
 
-# OTEL auto-instrumentation via ADOT agent, wrapped by otel-bootstrap.js to
-# give the ECS task-credentials HTTP call a readable X-Ray span name
-ENV NODE_OPTIONS="--require /app/otel-bootstrap.js"
+# OTEL auto-instrumentation via ADOT agent
+ENV NODE_OPTIONS="--require @aws/aws-distro-opentelemetry-node-autoinstrumentation/register"
 
 # OTEL collector sidecar endpoint (localhost since containers share network in Fargate awsvpc mode)
 ENV OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"
 ENV OTEL_EXPORTER_OTLP_PROTOCOL="grpc"
 
 # Service name for traces
-ENV OTEL_SERVICE_NAME="xray-frontend"
+ENV OTEL_SERVICE_NAME="xray-idp"
 
 # X-Ray daemon address (OTEL collector handles X-Ray export, but set for SDK awareness)
 ENV AWS_XRAY_DAEMON_ADDRESS="localhost:2000"
@@ -43,6 +42,6 @@ ENV AWS_XRAY_DAEMON_ADDRESS="localhost:2000"
 # Propagate trace context using X-Ray format
 ENV OTEL_PROPAGATORS="xray"
 
-EXPOSE 8000
+EXPOSE 3000
 
-CMD ["node", "dist/main.js"]
+CMD ["npm", "start"]

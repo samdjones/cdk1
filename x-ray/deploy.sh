@@ -41,6 +41,13 @@ npm install
 npm run build
 echo "✓ app-xray built"
 
+# ── Build ECS app: app-idp ────────────────────────────────────────────────
+echo "Building app-idp..."
+cd "$SCRIPT_DIR/app-idp"
+npm install
+npm run build
+echo "✓ app-idp built"
+
 # ── CDK Deploy ────────────────────────────────────────────────────────────
 echo ""
 echo "Deploying XrayPocStack..."
