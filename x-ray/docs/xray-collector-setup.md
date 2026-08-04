@@ -39,6 +39,8 @@ adot_layer = lambda_.LayerVersion.from_layer_version_arn(
 
 The layer ARN `901920570463` is AWS's own account — this is a publicly available managed layer, not something you build yourself.
 
+**`xray-dog-fetcher` is the exception**: it uses a self-owned copy of this same layer instead of the shared ARN above, to demonstrate how to avoid a live cross-account layer reference at deploy time (some environments block attaching layers published by a foreign account). `lambda/xray-dog-fetcher/download-otel-layer.sh` downloads the layer's content at build time (`aws lambda get-layer-version` against the public ARN, then fetches the presigned zip), and `frontend_stack.py`'s `AdotLayerDogFetcher` builds a normal `LayerVersion` from that local directory via `Code.from_asset` rather than `from_layer_version_arn`. The runtime behavior is identical — it's still a Layer mounted at `/opt` with the same internal layout, since a Lambda Extension (the embedded collector binary) can only be discovered by Lambda from `/opt/extensions/`, which only a Layer can populate. `xray-invoker` and `xray-s3-writer` keep using the AWS-managed ARN for contrast.
+
 ### The exec wrapper: `AWS_LAMBDA_EXEC_WRAPPER`
 
 The key to zero-code-change instrumentation is this environment variable:

@@ -27,6 +27,11 @@ npm install
 npm run build
 echo "✓ xray-dog-fetcher built"
 
+# ── Download ADOT layer for xray-dog-fetcher ──────────────────────────────
+echo "Downloading ADOT OTel layer for xray-dog-fetcher..."
+"$SCRIPT_DIR/lambda/xray-dog-fetcher/download-otel-layer.sh"
+echo "✓ ADOT layer downloaded"
+
 # ── Build Lambda: xray-s3-writer ──────────────────────────────────────────
 echo "Building lambda/xray-s3-writer..."
 cd "$SCRIPT_DIR/lambda/xray-s3-writer"

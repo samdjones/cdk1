@@ -53,6 +53,19 @@ class XrayFrontendStack(Stack):
             f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-18-1:4",
         )
 
+        # xray-dog-fetcher uses a self-owned copy of the same layer instead
+        # of AWS's shared cross-account ARN above - see
+        # lambda/xray-dog-fetcher/download-otel-layer.sh and
+        # docs/xray-collector-setup.md for why. Content is downloaded at
+        # build time; CDK packages it as a normal local-asset LayerVersion.
+        adot_layer_dogfetcher = lambda_.LayerVersion(
+            self,
+            "AdotLayerDogFetcher",
+            code=lambda_.Code.from_asset("lambda/xray-dog-fetcher/otel-layer"),
+            compatible_runtimes=[lambda_.Runtime.NODEJS_22_X],
+            description="Vendored AWS Distro for OpenTelemetry Node.js Lambda layer (aws-otel-nodejs-amd64-ver-1-18-1:4), downloaded at build time instead of referenced via AWS's shared cross-account layer ARN.",
+        )
+
         common_otel_env = {
             "AWS_LAMBDA_EXEC_WRAPPER": "/opt/otel-handler",
             "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
@@ -103,7 +116,7 @@ class XrayFrontendStack(Stack):
                 "S3_WRITER_FUNCTION_NAME": xray_s3_writer_fn.function_name,
             },
             tracing=lambda_.Tracing.ACTIVE,
-            layers=[adot_layer],
+            layers=[adot_layer_dogfetcher],
             timeout=Duration.seconds(30),
             memory_size=256,
         )
