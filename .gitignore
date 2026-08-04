@@ -9,6 +9,3 @@ cdk.out/
 .next/
 next-env.d.ts
 *.tsbuildinfo
-
-# Downloaded Lambda layer content (fetched at build time, see download-otel-layer.sh)
-otel-layer/

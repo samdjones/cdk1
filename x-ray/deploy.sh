@@ -21,16 +21,15 @@ npm run build
 echo "✓ xray-invoker built"
 
 # ── Build Lambda: xray-dog-fetcher ────────────────────────────────────────
+# Its ADOT layer content (otel-layer.zip) is a vendored, checked-in artifact,
+# not downloaded here - this script must not make any AWS API call beyond
+# the `cdk deploy` below. See lambda/xray-dog-fetcher/download-otel-layer.sh
+# for how to refresh that vendored copy.
 echo "Building lambda/xray-dog-fetcher..."
 cd "$SCRIPT_DIR/lambda/xray-dog-fetcher"
 npm install
 npm run build
 echo "✓ xray-dog-fetcher built"
-
-# ── Download ADOT layer for xray-dog-fetcher ──────────────────────────────
-echo "Downloading ADOT OTel layer for xray-dog-fetcher..."
-"$SCRIPT_DIR/lambda/xray-dog-fetcher/download-otel-layer.sh"
-echo "✓ ADOT layer downloaded"
 
 # ── Build Lambda: xray-s3-writer ──────────────────────────────────────────
 echo "Building lambda/xray-s3-writer..."
