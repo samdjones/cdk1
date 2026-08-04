@@ -23,7 +23,7 @@ echo "✓ xray-invoker built"
 # ── Build Lambda: xray-dog-fetcher ────────────────────────────────────────
 # Its ADOT layer content (otel-layer.zip) is a vendored, checked-in artifact,
 # not downloaded here - this script must not make any AWS API call beyond
-# the `cdk deploy` below. See lambda/xray-dog-fetcher/download-otel-layer.sh
+# the `cdk deploy` below. See lambda/xray-dog-fetcher/resolve-otel-layer-url.sh
 # for how to refresh that vendored copy.
 echo "Building lambda/xray-dog-fetcher..."
 cd "$SCRIPT_DIR/lambda/xray-dog-fetcher"

@@ -9,3 +9,7 @@ cdk.out/
 .next/
 next-env.d.ts
 *.tsbuildinfo
+
+# Ephemeral handoff artifact - contains a short-lived presigned URL with an
+# AWS security token embedded, never commit it (see resolve-otel-layer-url.sh)
+otel-layer-download-manifest.txt
