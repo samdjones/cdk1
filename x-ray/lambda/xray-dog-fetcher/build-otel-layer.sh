@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Manual vendoring script - NOT part of deploy.sh / prod's build pipeline.
+# Phase 3 of 3 for vendoring the ADOT Node.js Lambda layer from source.
+# Entirely offline - no network access, no AWS credentials, no aws CLI, no
+# git. It only reads the two zips already staged in otel-build-inputs/ (put
+# there by the download team, per otel-layer-download-manifest.txt - see
+# resolve-otel-layer-urls.sh for phase 1) and compiles the layer locally.
 #
-# Prod's own build/deploy run can't make any AWS API call (not even a
-# read-only one), can't use the aws CLI, and can't run `git clone` either -
-# only plain HTTPS downloads of zip files are allowed. So this builds the
-# ADOT Node.js Lambda layer from source using nothing but zip-archive
-# downloads: GitHub's codeload endpoint serves any repo ref as a plain .zip
-# (https://github.com/<owner>/<repo>/archive/<ref>.zip), no git binary
-# needed. The one wrinkle is that a repo's zip archive does NOT include its
-# git submodules' content (aws-observability/aws-otel-lambda pulls in
-# open-telemetry/opentelemetry-lambda as a submodule) - GitHub's public,
-# unauthenticated Contents API (a plain GET, not a git operation) reports
-# which exact commit a submodule path is pinned to, which we then download
-# as its own separate zip.
+#   Phase 1 (resolve-otel-layer-urls.sh): resolve exact commit SHAs -> write
+#                           a download manifest.
+#   Phase 2 (another team): download each URL in the manifest into
+#                           otel-build-inputs/<filename>, add those files to
+#                           this repo.
+#   Phase 3 (this script):  build the layer from the staged zips.
 #
 # Run this by hand (e.g. on a developer machine, or a separate non-prod
 # tooling job) whenever the vendored layer needs refreshing, then commit the
@@ -24,17 +22,28 @@ set -euo pipefail
 # local unzip/rezip needed). See docs/xray-collector-setup.md for why
 # xray-dog-fetcher vendors this and xray-invoker/xray-s3-writer don't.
 #
-# Prerequisites (all standard dev tooling, nothing AWS-specific, no git):
-# curl, jq, go, node/npm, patch, zip, unzip.
+# Prerequisites (all standard dev tooling, nothing AWS-specific): go,
+# node/npm, patch, zip, unzip.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INPUTS_DIR="$SCRIPT_DIR/otel-build-inputs"
 OUT_ZIP="$SCRIPT_DIR/otel-layer.zip"
 GOARCH="${GOARCH:-amd64}"
-AWS_OTEL_LAMBDA_REF="${AWS_OTEL_LAMBDA_REF:-main}"
 
-for tool in curl jq go node npm patch zip unzip; do
+for tool in go node npm patch zip unzip; do
   command -v "$tool" >/dev/null 2>&1 || {
     echo "Missing required tool: $tool" >&2
+    exit 1
+  }
+done
+
+AWS_OTEL_LAMBDA_ZIP="$INPUTS_DIR/aws-otel-lambda.zip"
+SUBMODULE_ZIP="$INPUTS_DIR/opentelemetry-lambda.zip"
+for f in "$AWS_OTEL_LAMBDA_ZIP" "$SUBMODULE_ZIP"; do
+  [ -f "$f" ] || {
+    echo "Missing $f" >&2
+    echo "Run resolve-otel-layer-urls.sh, hand the resulting manifest to the" >&2
+    echo "download team, and stage the two zips it lists under ${INPUTS_DIR}/ first." >&2
     exit 1
   }
 done
@@ -42,25 +51,16 @@ done
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-echo "Downloading aws-observability/aws-otel-lambda (ref: ${AWS_OTEL_LAMBDA_REF})..."
-curl -sL -o "$WORK_DIR/aws-otel-lambda.zip" \
-  "https://github.com/aws-observability/aws-otel-lambda/archive/refs/heads/${AWS_OTEL_LAMBDA_REF}.zip"
-# GitHub embeds the resolved commit SHA as the zip's archive comment.
-AWS_OTEL_LAMBDA_SHA=$(unzip -qz "$WORK_DIR/aws-otel-lambda.zip")
-unzip -q "$WORK_DIR/aws-otel-lambda.zip" -d "$WORK_DIR"
-REPO_DIR="$WORK_DIR/aws-otel-lambda-${AWS_OTEL_LAMBDA_REF}"
+echo "Extracting staged aws-otel-lambda.zip..."
+unzip -q "$AWS_OTEL_LAMBDA_ZIP" -d "$WORK_DIR"
+REPO_DIR=$(find "$WORK_DIR" -maxdepth 1 -type d -name 'aws-otel-lambda-*')
+AWS_OTEL_LAMBDA_SHA="${REPO_DIR##*aws-otel-lambda-}"
 
-echo "Resolving the pinned opentelemetry-lambda submodule commit via GitHub's Contents API..."
-SUBMODULE_SHA=$(curl -sL \
-  "https://api.github.com/repos/aws-observability/aws-otel-lambda/contents/opentelemetry-lambda?ref=${AWS_OTEL_LAMBDA_SHA}" \
-  | jq -r '.sha')
-
-echo "Downloading open-telemetry/opentelemetry-lambda @ ${SUBMODULE_SHA}..."
-curl -sL -o "$WORK_DIR/opentelemetry-lambda.zip" \
-  "https://github.com/open-telemetry/opentelemetry-lambda/archive/${SUBMODULE_SHA}.zip"
-unzip -q "$WORK_DIR/opentelemetry-lambda.zip" -d "$WORK_DIR"
+echo "Extracting staged opentelemetry-lambda.zip..."
+unzip -q "$SUBMODULE_ZIP" -d "$WORK_DIR"
+SUBMODULE_DIR=$(find "$WORK_DIR" -maxdepth 1 -type d -name 'opentelemetry-lambda-*')
 rm -rf "$REPO_DIR/opentelemetry-lambda"
-mv "$WORK_DIR/opentelemetry-lambda-${SUBMODULE_SHA}" "$REPO_DIR/opentelemetry-lambda"
+mv "$SUBMODULE_DIR" "$REPO_DIR/opentelemetry-lambda"
 
 cd "$REPO_DIR"
 
