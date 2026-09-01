@@ -184,7 +184,7 @@ The underlying `register` script (whichever way it's loaded) initialises the OTe
 - `express` — HTTP server spans (each incoming request becomes a span)
 - `@aws-sdk/*` — AWS SDK client calls (Lambda invocations become child spans)
 - `http`/`https` — outbound HTTP calls
-- `undici` — outbound global `fetch()` calls (see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below — historically this wasn't also true of the Lambda ADOT layer, though as of `ver-1-30-2` it now is)
+- `undici` — outbound global `fetch()` calls (see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below — the Lambda ADOT layer bundles this instrumentation too as of `ver-1-30-2`, but that alone isn't enough to keep `xray-invoker` connected to the rest of the trace; a manual header is still required there for a different reason)
 
 The agent is configured to send traces to the sidecar via:
 
@@ -288,7 +288,7 @@ Most of the chain is automatic — the ADOT auto-instrumentation patches the AWS
 
 Neither of these handlers touches trace headers directly.
 
-Previously, the first hop, `xray-invoker` → ALB, needed to be done manually in app code (`lambda/xray-invoker/src/handler.ts`):
+The one exception is the first hop, `xray-invoker` → ALB, which **is done manually in app code** (`lambda/xray-invoker/src/handler.ts`):
 
 ```ts
 const traceHeader = process.env._X_AMZN_TRACE_ID;
@@ -297,11 +297,16 @@ const response = await fetch(url, {
 });
 ```
 
-This was necessary because Node's global `fetch()` is backed by `undici`, and the **Lambda ADOT layer's** bundled instrumentation set didn't cover it — without this explicit header, the trace would break (or restart) at this hop.
+This is necessary because Node's global `fetch()` is backed by `undici`, and — despite what you'd expect — the **Lambda ADOT layer's** own instrumentation of it isn't enough on its own to keep `xray-invoker` connected to the rest of the trace. Without this explicit header, `xray-invoker`'s official X-Ray segment (the one driven by `tracing=lambda_.Tracing.ACTIVE` and Lambda's `_X_AMZN_TRACE_ID` env var) ends up **orphaned from everything downstream of it**.
 
-This was specific to the Lambda layer, not a general Node.js/OTel limitation: `xray-frontend`'s own side-call to idp (`checkIdpHealth()` in `app-xray/src/app.ts`) uses plain `fetch()` too, with no manual header handling, and it propagates correctly — confirmed in a real trace. The npm-installed `@aws/aws-distro-opentelemetry-node-autoinstrumentation` package used by the ECS apps bundles `@opentelemetry/instrumentation-undici` by default, so `fetch()` calls made from `app-xray` or `app-idp` are covered automatically; the older Lambda layer (`aws-otel-nodejs-amd64-ver-1-18-1`) was a different, older bundled distribution that wasn't.
+This was re-tested live end-to-end (2026-09-01, against the layer currently vendored in this repo, `aws-otel-nodejs-amd64-ver-1-30-2:6`) by deploying, removing this header, invoking, and inspecting the resulting trace via `aws xray batch-get-traces`:
 
-**Update:** as of `aws-otel-nodejs-amd64-ver-1-30-2:6` (the layer version currently vendored/referenced in this repo), the Lambda layer bundles `@opentelemetry/instrumentation-undici` too — confirmed by unpacking the vendored layer zip and finding `UndiciInstrumentation` subscribing to the `undici:request:create`/`undici:client:sendHeaders`/`undici:request:headers` diagnostics channels, gated on `getNodeAutoInstrumentations()`'s standard `OTEL_NODE_DISABLED_INSTRUMENTATIONS`/`OTEL_NODE_ENABLED_INSTRUMENTATIONS` mechanism (enabled by default, same as every other instrumentation in the set). The manual header propagation above has been **removed** from `xray-invoker` on that basis — **this has not been verified against a live trace** (no stack was deployed at the time of this change), so if `xray-invoker`'s hop shows up broken/disconnected in the X-Ray service map after deploying, this is the first place to look, and the snippet above shows what to restore.
+- **With the header removed**: `xray-invoker`'s own Lambda-native segment landed under one trace ID (e.g. `1-6a96dc28-...`), while the entire downstream chain — Envoy, `xray-frontend`, `xray-idp`, `xray-dog-fetcher`, `xray-s3-writer` — landed correctly parented under a *different* trace ID (e.g. `1-6a96dc2a-...`). So the downstream `undici` propagation genuinely does work now (confirming the layer *does* bundle `@opentelemetry/instrumentation-undici`, verified separately by unpacking the vendored layer zip and finding `UndiciInstrumentation` subscribing to the `undici:request:create`/`undici:client:sendHeaders`/`undici:request:headers` diagnostics channels) — but the OTel SDK's own X-Ray ID generator was minting a *fresh* trace ID for that outbound span instead of inheriting the one Lambda's active-tracing runtime already established via `_X_AMZN_TRACE_ID`. The net effect in the X-Ray console: `xray-invoker`'s real invocation trace shows no downstream hops at all.
+- **With the header restored**: a single trace (e.g. `1-6a96dd15-...`) contains all 10 segments, correctly parented from `xray-invoker`'s native segment straight through to `xray-s3-writer`.
+
+So the manual header stays. This is specific to how Lambda's built-in active tracing and the ADOT/OTel SDK's own trace-ID generation interact for the *first* hop out of a Lambda — it's not a general Node.js/OTel limitation: `xray-frontend`'s own side-call to idp (`checkIdpHealth()` in `app-xray/src/app.ts`) uses plain `fetch()` too, with no manual header handling, and it propagates correctly, because ECS tasks have no equivalent Lambda-native active-tracing segment to stay in sync with — there's only ever the one, OTel-SDK-generated trace ID for that leg. The npm-installed `@aws/aws-distro-opentelemetry-node-autoinstrumentation` package used by the ECS apps bundles `@opentelemetry/instrumentation-undici` too, same as the Lambda layer, so `fetch()` calls made from `app-xray` or `app-idp` are covered automatically with no manual step.
+
+(Separately, both live tests also showed a handful of extra, harmless duplicate segments per Lambda — e.g. a second `xray-invoker`/`xray-dog-fetcher`/`xray-s3-writer` segment with `origin: null` and no parent, forming their own single-segment trace IDs. These appear regardless of the header fix and don't affect the real, fully-connected trace; they look like a cosmetic quirk of the layer's own local span export rather than anything this repo's code controls.)
 
 ---
 

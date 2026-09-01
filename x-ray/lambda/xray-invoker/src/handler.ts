@@ -14,10 +14,13 @@ export const handler = async (
 
   console.log(`Invoking frontend at: ${url}`);
 
+  const traceHeader = process.env._X_AMZN_TRACE_ID;
+
   const response = await fetch(url, {
     method: "GET",
     headers: {
       "Content-Type": "application/json",
+      ...(traceHeader ? { "X-Amzn-Trace-Id": traceHeader } : {}),
     },
   });
 
