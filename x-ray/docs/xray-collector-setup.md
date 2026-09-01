@@ -33,7 +33,7 @@ The layer is attached via CDK:
 adot_layer = lambda_.LayerVersion.from_layer_version_arn(
     self,
     "AdotLayer",
-    f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-18-1:4",
+    f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-30-2:6",
 )
 ```
 
@@ -183,7 +183,7 @@ The underlying `register` script (whichever way it's loaded) initialises the OTe
 - `express` — HTTP server spans (each incoming request becomes a span)
 - `@aws-sdk/*` — AWS SDK client calls (Lambda invocations become child spans)
 - `http`/`https` — outbound HTTP calls
-- `undici` — outbound global `fetch()` calls (see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below — this matters because it's *not* true of the Lambda ADOT layer)
+- `undici` — outbound global `fetch()` calls (see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below — historically this wasn't also true of the Lambda ADOT layer, though as of `ver-1-30-2` it now is)
 
 The agent is configured to send traces to the sidecar via:
 
@@ -287,7 +287,7 @@ Most of the chain is automatic — the ADOT auto-instrumentation patches the AWS
 
 Neither of these handlers touches trace headers directly.
 
-The one exception is the first hop, `xray-invoker` → ALB, which **is done manually in app code** (`lambda/xray-invoker/src/handler.ts`):
+Previously, the first hop, `xray-invoker` → ALB, needed to be done manually in app code (`lambda/xray-invoker/src/handler.ts`):
 
 ```ts
 const traceHeader = process.env._X_AMZN_TRACE_ID;
@@ -296,9 +296,11 @@ const response = await fetch(url, {
 });
 ```
 
-This is necessary because Node's global `fetch()` is backed by `undici`, and the **Lambda ADOT layer's** bundled instrumentation set doesn't cover it — without this explicit header, the trace would break (or restart) at this hop.
+This was necessary because Node's global `fetch()` is backed by `undici`, and the **Lambda ADOT layer's** bundled instrumentation set didn't cover it — without this explicit header, the trace would break (or restart) at this hop.
 
-This is specific to the Lambda layer, not a general Node.js/OTel limitation: `xray-frontend`'s own side-call to idp (`checkIdpHealth()` in `app-xray/src/app.ts`) uses plain `fetch()` too, with no manual header handling, and it propagates correctly — confirmed in a real trace. The npm-installed `@aws/aws-distro-opentelemetry-node-autoinstrumentation` package used by the ECS apps bundles `@opentelemetry/instrumentation-undici` by default, so `fetch()` calls made from `app-xray` or `app-idp` are covered automatically; the Lambda layer (`aws-otel-nodejs-amd64-ver-1-18-1`) is a different, older bundled distribution that isn't.
+This was specific to the Lambda layer, not a general Node.js/OTel limitation: `xray-frontend`'s own side-call to idp (`checkIdpHealth()` in `app-xray/src/app.ts`) uses plain `fetch()` too, with no manual header handling, and it propagates correctly — confirmed in a real trace. The npm-installed `@aws/aws-distro-opentelemetry-node-autoinstrumentation` package used by the ECS apps bundles `@opentelemetry/instrumentation-undici` by default, so `fetch()` calls made from `app-xray` or `app-idp` are covered automatically; the older Lambda layer (`aws-otel-nodejs-amd64-ver-1-18-1`) was a different, older bundled distribution that wasn't.
+
+**Update:** as of `aws-otel-nodejs-amd64-ver-1-30-2:6` (the layer version currently vendored/referenced in this repo), the Lambda layer bundles `@opentelemetry/instrumentation-undici` too — confirmed by unpacking the vendored layer zip and finding `UndiciInstrumentation` subscribing to the `undici:request:create`/`undici:client:sendHeaders`/`undici:request:headers` diagnostics channels, gated on `getNodeAutoInstrumentations()`'s standard `OTEL_NODE_DISABLED_INSTRUMENTATIONS`/`OTEL_NODE_ENABLED_INSTRUMENTATIONS` mechanism (enabled by default, same as every other instrumentation in the set). The manual header propagation above has been **removed** from `xray-invoker` on that basis — **this has not been verified against a live trace** (no stack was deployed at the time of this change), so if `xray-invoker`'s hop shows up broken/disconnected in the X-Ray service map after deploying, this is the first place to look, and the snippet above shows what to restore.
 
 ---
 

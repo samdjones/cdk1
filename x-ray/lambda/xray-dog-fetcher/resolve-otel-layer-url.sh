@@ -24,8 +24,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REGION="${AWS_REGION:-us-east-1}"
-LAYER_NAME="arn:aws:lambda:${REGION}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-18-1"
-LAYER_VERSION=4
+LAYER_NAME="arn:aws:lambda:${REGION}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-30-2"
+LAYER_VERSION=6
 MANIFEST="$SCRIPT_DIR/otel-layer-download-manifest.txt"
 TTL_SECONDS=600
 

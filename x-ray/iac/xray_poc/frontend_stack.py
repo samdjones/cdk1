@@ -50,7 +50,7 @@ class XrayFrontendStack(Stack):
         adot_layer = lambda_.LayerVersion.from_layer_version_arn(
             self,
             "AdotLayer",
-            f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-18-1:4",
+            f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-30-2:6",
         )
 
         # xray-dog-fetcher uses a self-owned copy of the same layer instead
@@ -67,7 +67,7 @@ class XrayFrontendStack(Stack):
             "AdotLayerDogFetcher",
             code=lambda_.Code.from_asset("lambda/xray-dog-fetcher/otel-layer.zip"),
             compatible_runtimes=[lambda_.Runtime.NODEJS_22_X],
-            description="Vendored AWS Distro for OpenTelemetry Node.js Lambda layer (aws-otel-nodejs-amd64-ver-1-18-1:4), checked in instead of referenced via AWS's shared cross-account layer ARN.",
+            description="Vendored AWS Distro for OpenTelemetry Node.js Lambda layer (aws-otel-nodejs-amd64-ver-1-30-2:6), checked in instead of referenced via AWS's shared cross-account layer ARN.",
         )
 
         common_otel_env = {
