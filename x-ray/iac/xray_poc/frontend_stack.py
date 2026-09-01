@@ -50,7 +50,7 @@ class XrayFrontendStack(Stack):
         adot_layer = lambda_.LayerVersion.from_layer_version_arn(
             self,
             "AdotLayer",
-            f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-18-1:4",
+            f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-30-2:6",
         )
 
         common_otel_env = {

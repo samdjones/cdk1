@@ -33,11 +33,13 @@ The layer is attached via CDK:
 adot_layer = lambda_.LayerVersion.from_layer_version_arn(
     self,
     "AdotLayer",
-    f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-18-1:4",
+    f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-30-2:6",
 )
 ```
 
 The layer ARN `901920570463` is AWS's own account — this is a publicly available managed layer, not something you build yourself.
+
+There's no `list-layer-versions` API available for a layer published by a different account — only `get-layer-version`, which reads one specific version number at a time and is allowed cross-account by the layer's own public resource policy. `find-latest-otel-layer-version.sh <ver-x-y-z> [region]` (repo root: `x-ray/`) finds the latest published version number for a given ADOT release line (e.g. `ver-1-30-2`) for both `amd64` and `arm64`, by probing version numbers upward and tolerating gaps — AWS's own publishes aren't always contiguous (confirmed empirically: `aws-otel-nodejs-arm64-ver-1-30-0` is missing versions 3 and 5 but has versions up to 8). Run it before bumping the ARN above to a new release line.
 
 ### The exec wrapper: `AWS_LAMBDA_EXEC_WRAPPER`
 
@@ -174,7 +176,7 @@ The underlying `register` script (whichever way it's loaded) initialises the OTe
 - `express` — HTTP server spans (each incoming request becomes a span)
 - `@aws-sdk/*` — AWS SDK client calls (Lambda invocations become child spans)
 - `http`/`https` — outbound HTTP calls
-- `undici` — outbound global `fetch()` calls (see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below — this matters because it's *not* true of the Lambda ADOT layer)
+- `undici` — outbound global `fetch()` calls (see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below — the Lambda ADOT layer bundles this instrumentation too as of `ver-1-30-2`, but that alone isn't enough to keep `xray-invoker` connected to the rest of the trace; a manual header is still required there for a different reason)
 
 The agent is configured to send traces to the sidecar via:
 
@@ -287,9 +289,14 @@ const response = await fetch(url, {
 });
 ```
 
-This is necessary because Node's global `fetch()` is backed by `undici`, and the **Lambda ADOT layer's** bundled instrumentation set doesn't cover it — without this explicit header, the trace would break (or restart) at this hop.
+This is necessary because Node's global `fetch()` is backed by `undici`, and — despite what you'd expect — the **Lambda ADOT layer's** own instrumentation of it isn't enough on its own to keep `xray-invoker` connected to the rest of the trace. Without this explicit header, `xray-invoker`'s official X-Ray segment (the one driven by `tracing=lambda_.Tracing.ACTIVE` and Lambda's `_X_AMZN_TRACE_ID` env var) ends up **orphaned from everything downstream of it**.
 
-This is specific to the Lambda layer, not a general Node.js/OTel limitation: `xray-frontend`'s own side-call to idp (`checkIdpHealth()` in `app-xray/src/app.ts`) uses plain `fetch()` too, with no manual header handling, and it propagates correctly — confirmed in a real trace. The npm-installed `@aws/aws-distro-opentelemetry-node-autoinstrumentation` package used by the ECS apps bundles `@opentelemetry/instrumentation-undici` by default, so `fetch()` calls made from `app-xray` or `app-idp` are covered automatically; the Lambda layer (`aws-otel-nodejs-amd64-ver-1-18-1`) is a different, older bundled distribution that isn't.
+This was tested live end-to-end (2026-09-01, against `aws-otel-nodejs-amd64-ver-1-30-2:6`) by deploying, removing this header, invoking, and inspecting the resulting trace via `aws xray batch-get-traces`:
+
+- **With the header removed**: `xray-invoker`'s own Lambda-native segment landed under one trace ID, while the entire downstream chain — Envoy, `xray-frontend`, `xray-idp`, `xray-dog-fetcher`, `xray-s3-writer` — landed correctly parented under a *different* trace ID. So the downstream `undici` propagation genuinely does work (confirming the layer does bundle `@opentelemetry/instrumentation-undici` as of `ver-1-30-2`, verified separately by unpacking the layer zip and finding `UndiciInstrumentation` subscribing to the `undici:request:create`/`undici:client:sendHeaders`/`undici:request:headers` diagnostics channels) — but the OTel SDK's own X-Ray ID generator was minting a *fresh* trace ID for that outbound span instead of inheriting the one Lambda's active-tracing runtime already established via `_X_AMZN_TRACE_ID`. The net effect in the X-Ray console: `xray-invoker`'s real invocation trace shows no downstream hops at all.
+- **With the header restored**: a single trace contains all 10 segments, correctly parented from `xray-invoker`'s native segment straight through to `xray-s3-writer`.
+
+So the manual header stays. This is specific to how Lambda's built-in active tracing and the ADOT/OTel SDK's own trace-ID generation interact for the *first* hop out of a Lambda — it's not a general Node.js/OTel limitation: `xray-frontend`'s own side-call to idp (`checkIdpHealth()` in `app-xray/src/app.ts`) uses plain `fetch()` too, with no manual header handling, and it propagates correctly, because ECS tasks have no equivalent Lambda-native active-tracing segment to stay in sync with — there's only ever the one, OTel-SDK-generated trace ID for that leg. The npm-installed `@aws/aws-distro-opentelemetry-node-autoinstrumentation` package used by the ECS apps bundles `@opentelemetry/instrumentation-undici` too, same as the Lambda layer, so `fetch()` calls made from `app-xray` or `app-idp` are covered automatically with no manual step.
 
 ---
 
