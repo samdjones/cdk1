@@ -10,10 +10,10 @@ The two environments use different ADOT packaging because of their different exe
 
 | | Lambda | ECS Fargate |
 |---|---|---|
-| Collector packaging | Lambda Layer | Sidecar container |
-| Auto-instrumentation | `otel-handler` exec wrapper | Node.js agent via `NODE_OPTIONS` |
-| Collector config | Built into layer | `ecs-default-config.yaml` (baked into image) |
-| Export destination | X-Ray (via ADOT layer default) | X-Ray (via OTEL collector sidecar) |
+| Collector packaging | None — Lambda Layer talks directly to AWS | Sidecar container |
+| Auto-instrumentation | `otel-instrument` exec wrapper | Node.js agent via `NODE_OPTIONS` |
+| Collector config | N/A (no local collector) | `ecs-default-config.yaml` (baked into image) |
+| Export destination | X-Ray, direct OTLP/HTTP (SigV4-signed) | X-Ray (via OTEL collector sidecar) |
 
 ---
 
@@ -21,41 +21,68 @@ The two environments use different ADOT packaging because of their different exe
 
 ### How it works
 
-Lambda functions are short-lived processes — there's no persistent sidecar to run alongside them. Instead, ADOT is packaged as a **Lambda Layer** that contains both:
-
-1. A **collector binary** (a stripped-down OTel Collector that runs in-process)
-2. An **auto-instrumentation agent** for Node.js that patches the AWS SDK and HTTP clients
+This uses the **new/recommended** ADOT Lambda approach ([aws-otel.github.io/docs/getting-started/lambda](https://aws-otel.github.io/docs/getting-started/lambda)), not the legacy `aws-otel-nodejs-*` layer + `/opt/otel-handler` setup (still documented at the now-superseded [`lambda-js`](https://aws-otel.github.io/docs/getting-started/lambda/lambda-js) page) this repo used before. The new approach is built around **CloudWatch Application Signals**, but Application Signals is **deliberately not enabled here** — this migrates only the existing X-Ray tracing functionality; see [Application Signals: deliberately not enabled](#application-signals-deliberately-not-enabled) below.
 
 The layer is attached via CDK:
 
 ```python
-# iac/xray_poc/xray_stack.py
+# iac/xray_poc/frontend_stack.py
 adot_layer = lambda_.LayerVersion.from_layer_version_arn(
     self,
     "AdotLayer",
-    f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-30-2:6",
+    f"arn:aws:lambda:{Stack.of(self).region}:615299751070:layer:AWSOpenTelemetryDistroJs:15",
 )
 ```
 
-The layer ARN `901920570463` is AWS's own account — this is a publicly available managed layer, not something you build yourself.
+The layer ARN account `615299751070` is AWS's own — a different account than the legacy layer's `901920570463`, and a different layer name (`AWSOpenTelemetryDistroJs`, no `amd64`/`arm64` split — confirmed empirically that arch-suffixed variants of this name don't exist; it's architecture-agnostic).
 
-There's no `list-layer-versions` API available for a layer published by a different account — only `get-layer-version`, which reads one specific version number at a time and is allowed cross-account by the layer's own public resource policy. `find-latest-otel-layer-version.sh <ver-x-y-z> [region]` (repo root: `x-ray/`) finds the latest published version number for a given ADOT release line (e.g. `ver-1-30-2`) for both `amd64` and `arm64`, by probing version numbers upward and tolerating gaps — AWS's own publishes aren't always contiguous (confirmed empirically: `aws-otel-nodejs-arm64-ver-1-30-0` is missing versions 3 and 5 but has versions up to 8). Run it before bumping the ARN above to a new release line.
+There's no `list-layer-versions` API available for a layer published by a different account — only `get-layer-version`, which reads one specific version number at a time and is allowed cross-account by the layer's own public resource policy. `find-latest-otel-layer-version.sh [region]` (repo root: `x-ray/`) finds the latest published version number, by probing version numbers upward and tolerating gaps. Run it before bumping the version in the ARN above.
+
+Unlike the legacy layer, **there's no embedded collector binary** — confirmed by unpacking the layer zip (2MB vs. the old layer's 18–30MB, and no `extensions/` directory for a Lambda Extension process). Instead, the OTel SDK exports spans directly over OTLP/HTTP straight to AWS, using SigV4-signed requests (confirmed present in the layer's bundled `wrapper.js`) — no local collector process, no `OTEL_EXPORTER_OTLP_ENDPOINT` to configure by hand.
 
 ### The exec wrapper: `AWS_LAMBDA_EXEC_WRAPPER`
 
 The key to zero-code-change instrumentation is this environment variable:
 
 ```python
-"AWS_LAMBDA_EXEC_WRAPPER": "/opt/otel-handler",
+"AWS_LAMBDA_EXEC_WRAPPER": "/opt/otel-instrument",
 ```
 
-Lambda supports an exec wrapper mechanism: before running your handler, Lambda executes the binary at the path in `AWS_LAMBDA_EXEC_WRAPPER`, which in turn starts your handler. The `/opt/otel-handler` script (provided by the layer at `/opt/`) does the following:
+Note the path: `/opt/otel-instrument`, not the legacy layer's `/opt/otel-handler`. Lambda supports an exec wrapper mechanism: before running your handler, Lambda executes the binary at the path in `AWS_LAMBDA_EXEC_WRAPPER`, which in turn starts your handler. Read straight from the unpacked layer's `otel-instrument` script, it:
 
-1. Starts the embedded ADOT Collector in a background thread
-2. Sets `NODE_OPTIONS=--require /opt/nodejs/node_modules/@aws/aws-distro-opentelemetry-node-agent/register` to load the Node.js auto-instrumentation agent before your code runs
-3. Starts your handler process as normal
+1. Adds `--require /opt/wrapper.js` (or `--import /opt/wrapper.mjs` for ESM handlers) to `NODE_OPTIONS`, to load the instrumentation before your code runs
+2. Sets defaults for anything not already set in the environment — notably `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_PROPAGATORS=baggage,tracecontext,xray`, `OTEL_AWS_APPLICATION_SIGNALS_ENABLED=true`, `OTEL_METRICS_EXPORTER=none`, `OTEL_LOGS_EXPORTER=none`, and — critically for cold-start time — `OTEL_NODE_ENABLED_INSTRUMENTATIONS=aws-sdk,aws-lambda,http` (a much narrower default than the legacy layer's "everything on"; see below)
+3. Starts your handler process as normal (`exec "$@"`)
 
-This means your handler code requires **no changes** — all AWS SDK calls, HTTP requests, and Lambda invocations are automatically traced.
+This means your handler code requires **no changes** — AWS SDK calls, HTTP requests, and Lambda invocations are automatically traced, once the reduced default instrumentation set is widened back out (next section).
+
+### Restoring full instrumentation coverage: `OTEL_NODE_DISABLED_INSTRUMENTATIONS`
+
+To reduce cold-start time, this layer **only auto-instruments `aws-sdk`, `aws-lambda`, and `http` by default** — a narrower set than the legacy layer's "every instrumentation on unless explicitly disabled" default. That default would silently drop span coverage for `undici`/global `fetch()` calls — which `xray-dog-fetcher` needs for its own span around its call to the Dog CEO API. Setting it to `none` (a literal string, not "empty" — it works because `"none"` isn't a real instrumentation package name, so nothing in the real instrumentation set actually matches it and gets disabled) restores full coverage, matching the old default:
+
+```python
+"OTEL_NODE_DISABLED_INSTRUMENTATIONS": "none",
+```
+
+This is AWS's own documented mechanism for this — see [Enabling all library instrumentations](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-Application-Signals-Enable-Lambda.html#Configuring-Lambda-AppSignals).
+
+### No `OTEL_EXPORTER_OTLP_PROTOCOL` override
+
+The legacy layer's environment set `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` (gRPC to the embedded local collector). This layer has no local collector to gRPC to, and — confirmed against AWS's own [OTLP Endpoints](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-OTLPEndpoint.html) docs — **the X-Ray OTLP traces endpoint only supports HTTP, not gRPC** at all. So this env var is left unset here, letting the layer's own `http/protobuf` default apply; setting `grpc` would silently break export.
+
+### Application Signals: deliberately not enabled
+
+```python
+"OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "false",
+```
+
+The layer defaults this to `true` if unset — so it has to be explicitly forced off here to keep this migration scoped to "same X-Ray tracing, new layer" rather than also turning on Application Signals' APM dashboards/SLOs. Confirmed by reading the layer's `wrapper.js`: when this is `"false"` and no explicit `OTEL_EXPORTER_OTLP_ENDPOINT` is set, it auto-configures `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://xray.<region>.amazonaws.com/v1/traces` — AWS's native OTLP-to-X-Ray ingestion endpoint — which is exactly the plain-X-Ray behavior this migration is meant to preserve.
+
+Turning Application Signals on later (out of scope for this change) would additionally require attaching the AWS-managed `CloudWatchLambdaApplicationSignalsExecutionRolePolicy` IAM policy to each function's role, and a one-time `aws_applicationsignals.CfnDiscovery` CDK resource per account/region.
+
+### IAM permissions
+
+No IAM changes were needed for this migration. `tracing=lambda_.Tracing.ACTIVE` already grants each function's role `xray:PutTraceSegments` and `xray:PutTelemetryRecords` (plus the sampling-rule actions) via CDK's built-in X-Ray grant — the same permissions [AWS's own docs](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-OTLP-UsingADOT.html) list as required for OTLP-to-X-Ray export.
 
 ### Active tracing
 
@@ -65,23 +92,25 @@ CDK enables X-Ray active tracing on each Lambda:
 tracing=lambda_.Tracing.ACTIVE,
 ```
 
-This tells the Lambda service to create an X-Ray trace segment for every invocation and pass the `_X_AMZN_TRACE_ID` header into the execution environment. The ADOT layer picks this up and uses it as the root segment, so all child spans (SDK calls, HTTP calls) nest under the same trace.
+This tells the Lambda service to create an X-Ray trace segment for every invocation and pass the `_X_AMZN_TRACE_ID` header into the execution environment. The ADOT layer picks this up and uses it as the root segment, so all child spans (SDK calls, HTTP calls) nest under the same trace — see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below for the one place this still needs help.
 
 ### What gets traced automatically
 
-- Outbound HTTP/HTTPS requests
+- Outbound HTTP/HTTPS requests (including global `fetch()`, via `undici` — only with `OTEL_NODE_DISABLED_INSTRUMENTATIONS=none` set, see above)
 - AWS SDK v3 client calls (Lambda `InvokeCommand`, S3 `PutObjectCommand`)
 - The Lambda invocation itself (as the root segment)
 
 ### Environment variables summary
 
 ```
-AWS_LAMBDA_EXEC_WRAPPER=/opt/otel-handler   # activates the layer's wrapper
-OTEL_PROPAGATORS=xray                        # use X-Ray trace context format
-OTEL_TRACES_EXPORTER=otlp                    # export via OTLP to embedded collector
-OTEL_EXPORTER_OTLP_PROTOCOL=grpc             # gRPC transport to collector
-OTEL_AWS_APPLICATION_SIGNALS_ENABLED=true    # enable Application Signals metrics
+AWS_LAMBDA_EXEC_WRAPPER=/opt/otel-instrument       # activates the layer's wrapper
+OTEL_PROPAGATORS=xray                               # use X-Ray trace context format
+OTEL_TRACES_EXPORTER=otlp                           # export via OTLP (redundant with the layer's own default, kept explicit)
+OTEL_NODE_DISABLED_INSTRUMENTATIONS=none            # restore full instrumentation coverage (see above)
+OTEL_AWS_APPLICATION_SIGNALS_ENABLED=false           # keep plain X-Ray export, no Application Signals (see above)
 ```
+
+Not set (left to the layer's own defaults, since overriding them would be wrong here): `OTEL_EXPORTER_OTLP_PROTOCOL` (defaults to `http/protobuf`; the X-Ray OTLP endpoint doesn't support gRPC) and `OTEL_EXPORTER_OTLP_ENDPOINT`/`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (auto-derived from `AWS_REGION` once Application Signals is off).
 
 ---
 
@@ -176,7 +205,7 @@ The underlying `register` script (whichever way it's loaded) initialises the OTe
 - `express` — HTTP server spans (each incoming request becomes a span)
 - `@aws-sdk/*` — AWS SDK client calls (Lambda invocations become child spans)
 - `http`/`https` — outbound HTTP calls
-- `undici` — outbound global `fetch()` calls (see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below — the Lambda ADOT layer bundles this instrumentation too as of `ver-1-30-2`, but that alone isn't enough to keep `xray-invoker` connected to the rest of the trace; a manual header is still required there for a different reason)
+- `undici` — outbound global `fetch()` calls (see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below — the Lambda layer bundles this instrumentation too, but that alone isn't enough to keep `xray-invoker` connected to the rest of the trace; a manual header is still required there for a different reason)
 
 The agent is configured to send traces to the sidecar via:
 
@@ -291,12 +320,14 @@ const response = await fetch(url, {
 
 This is necessary because Node's global `fetch()` is backed by `undici`, and — despite what you'd expect — the **Lambda ADOT layer's** own instrumentation of it isn't enough on its own to keep `xray-invoker` connected to the rest of the trace. Without this explicit header, `xray-invoker`'s official X-Ray segment (the one driven by `tracing=lambda_.Tracing.ACTIVE` and Lambda's `_X_AMZN_TRACE_ID` env var) ends up **orphaned from everything downstream of it**.
 
-This was tested live end-to-end (2026-09-01, against `aws-otel-nodejs-amd64-ver-1-30-2:6`) by deploying, removing this header, invoking, and inspecting the resulting trace via `aws xray batch-get-traces`:
+This was tested live end-to-end (2026-09-01, against the **legacy** `aws-otel-nodejs-amd64-ver-1-30-2:6` layer, before the migration to `AWSOpenTelemetryDistroJs` described earlier in this doc) by deploying, removing this header, invoking, and inspecting the resulting trace via `aws xray batch-get-traces`:
 
-- **With the header removed**: `xray-invoker`'s own Lambda-native segment landed under one trace ID, while the entire downstream chain — Envoy, `xray-frontend`, `xray-idp`, `xray-dog-fetcher`, `xray-s3-writer` — landed correctly parented under a *different* trace ID. So the downstream `undici` propagation genuinely does work (confirming the layer does bundle `@opentelemetry/instrumentation-undici` as of `ver-1-30-2`, verified separately by unpacking the layer zip and finding `UndiciInstrumentation` subscribing to the `undici:request:create`/`undici:client:sendHeaders`/`undici:request:headers` diagnostics channels) — but the OTel SDK's own X-Ray ID generator was minting a *fresh* trace ID for that outbound span instead of inheriting the one Lambda's active-tracing runtime already established via `_X_AMZN_TRACE_ID`. The net effect in the X-Ray console: `xray-invoker`'s real invocation trace shows no downstream hops at all.
+- **With the header removed**: `xray-invoker`'s own Lambda-native segment landed under one trace ID, while the entire downstream chain — Envoy, `xray-frontend`, `xray-idp`, `xray-dog-fetcher`, `xray-s3-writer` — landed correctly parented under a *different* trace ID. So the downstream `undici` propagation genuinely does work (confirming the layer does bundle `@opentelemetry/instrumentation-undici`, verified separately by unpacking the layer zip and finding `UndiciInstrumentation` subscribing to the `undici:request:create`/`undici:client:sendHeaders`/`undici:request:headers` diagnostics channels) — but the OTel SDK's own X-Ray ID generator was minting a *fresh* trace ID for that outbound span instead of inheriting the one Lambda's active-tracing runtime already established via `_X_AMZN_TRACE_ID`. The net effect in the X-Ray console: `xray-invoker`'s real invocation trace shows no downstream hops at all.
 - **With the header restored**: a single trace contains all 10 segments, correctly parented from `xray-invoker`'s native segment straight through to `xray-s3-writer`.
 
 So the manual header stays. This is specific to how Lambda's built-in active tracing and the ADOT/OTel SDK's own trace-ID generation interact for the *first* hop out of a Lambda — it's not a general Node.js/OTel limitation: `xray-frontend`'s own side-call to idp (`checkIdpHealth()` in `app-xray/src/app.ts`) uses plain `fetch()` too, with no manual header handling, and it propagates correctly, because ECS tasks have no equivalent Lambda-native active-tracing segment to stay in sync with — there's only ever the one, OTel-SDK-generated trace ID for that leg. The npm-installed `@aws/aws-distro-opentelemetry-node-autoinstrumentation` package used by the ECS apps bundles `@opentelemetry/instrumentation-undici` too, same as the Lambda layer, so `fetch()` calls made from `app-xray` or `app-idp` are covered automatically with no manual step.
+
+**Not yet re-verified against the new `AWSOpenTelemetryDistroJs` layer.** The underlying cause (Lambda-native active tracing vs. the OTel SDK's own X-Ray ID generation) is an architectural mismatch that should still apply regardless of which layer generates the SDK's spans, and `xray-invoker`'s handler code is unchanged by this migration — but this hasn't been confirmed live under the new layer yet (see the PR — no stack was deployed while making this change). If a fresh deploy shows `xray-invoker` disconnected from the rest of the trace, this section's fix still applies as-is; if it shows connected without the header, that'd be a new, worth-documenting difference from the legacy layer's behavior.
 
 ---
 
