@@ -68,7 +68,7 @@ npx cdk diff --all --app "python app_xray.py"
 
 A trigger Lambda (`xray-invoker`) calls a shared public ALB, which path-routes `/idp` and `/idp/*` to a `xray-idp` Next.js backend and everything else to a pass-through Envoy sidecar in front of an `xray-frontend` Express app. Before doing its own work, `xray-frontend` makes a best-effort side-call to `xray-idp` over CloudMap (bypassing the ALB), then invokes a `xray-dog-fetcher` Lambda that calls the public Dog CEO API and directly invokes `xray-s3-writer` to persist the result to S3. Every hop is instrumented for distributed tracing, including the Envoy hop itself:
 
-- **Lambdas** — X-Ray active tracing + ADOT Lambda layer (`AWS_LAMBDA_EXEC_WRAPPER=/opt/otel-handler`).
+- **Lambdas** — X-Ray active tracing + `AWSOpenTelemetryDistroJs` ADOT Lambda layer (`AWS_LAMBDA_EXEC_WRAPPER=/opt/otel-instrument`; Application Signals deliberately left off — plain X-Ray export only).
 - **ECS Fargate** (`xray-frontend`, `xray-idp`) — AWS OTEL Collector sidecar exporting to X-Ray; each app container loads the ADOT Node.js agent via `NODE_OPTIONS`.
 - **Envoy** — pass-through reverse proxy in front of `xray-frontend`, participates in the trace via its native `envoy.tracers.xray` provider.
 

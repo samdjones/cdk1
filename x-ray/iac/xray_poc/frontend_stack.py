@@ -47,18 +47,39 @@ class XrayFrontendStack(Stack):
         self.add_dependency(idp_stack)
 
         # ── ADOT Lambda layer ──────────────────────────────────────────────
+        # New-style AWSOpenTelemetryDistroJs layer (the "recommended" approach
+        # per https://aws-otel.github.io/docs/getting-started/lambda), not the
+        # legacy aws-otel-nodejs-* layer. See docs/xray-collector-setup.md for
+        # the exec wrapper / instrumentation-defaults differences this brings.
         adot_layer = lambda_.LayerVersion.from_layer_version_arn(
             self,
             "AdotLayer",
-            f"arn:aws:lambda:{Stack.of(self).region}:901920570463:layer:aws-otel-nodejs-amd64-ver-1-30-2:6",
+            f"arn:aws:lambda:{Stack.of(self).region}:615299751070:layer:AWSOpenTelemetryDistroJs:15",
         )
 
         common_otel_env = {
-            "AWS_LAMBDA_EXEC_WRAPPER": "/opt/otel-handler",
-            "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+            "AWS_LAMBDA_EXEC_WRAPPER": "/opt/otel-instrument",
+            # No OTEL_EXPORTER_OTLP_PROTOCOL override (was "grpc" under the
+            # old layer) - this layer has no embedded local collector to
+            # gRPC to. With Application Signals off, it auto-points OTLP
+            # traces straight at https://xray.<region>.amazonaws.com/v1/traces
+            # (confirmed by reading the unpacked layer's wrapper.js), an
+            # HTTPS/REST-style endpoint - forcing gRPC here would break
+            # export. Its own http/protobuf default is correct as-is.
             "OTEL_TRACES_EXPORTER": "otlp",
             "OTEL_PROPAGATORS": "xray",
-            "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "true",
+            # New layer only auto-instruments aws-sdk/http by default (for
+            # faster cold starts) - "none" restores full coverage (undici
+            # included), matching the old layer's always-everything-on
+            # default that xray-dog-fetcher's fetch() call to the Dog CEO
+            # API relies on for its own span.
+            "OTEL_NODE_DISABLED_INSTRUMENTATIONS": "none",
+            # Not enabled yet - deliberately deferred, see PR description.
+            # Flipping to "true" also requires attaching the
+            # CloudWatchLambdaApplicationSignalsExecutionRolePolicy managed
+            # policy to each function's role and adding an
+            # applicationsignals.CfnDiscovery resource once per account.
+            "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "false",
         }
 
         # ── S3 Bucket ──────────────────────────────────────────────────────
