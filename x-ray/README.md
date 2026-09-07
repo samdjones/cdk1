@@ -35,7 +35,7 @@ Every hop from the invoker down through S3 is synchronous end-to-end, so a failu
 
 ## X-Ray Instrumentation
 
-- **Lambdas** — X-Ray active tracing + ADOT Lambda layer with `AWS_LAMBDA_EXEC_WRAPPER=/opt/otel-handler`
+- **Lambdas** — X-Ray active tracing + `AWSOpenTelemetryDistroJs` Lambda layer with `AWS_LAMBDA_EXEC_WRAPPER=/opt/otel-instrument` (Application Signals off — plain X-Ray export only)
 - **ECS Fargate** (`xray-frontend`, `xray-idp`) — AWS OTEL Collector sidecar exporting to X-Ray; each app loads the ADOT Node.js agent via `NODE_OPTIONS`
 - **Envoy** — native `envoy.tracers.xray` provider, sending segments to the OTEL collector's UDP X-Ray-daemon receiver — see [`docs/envoy.md`](docs/envoy.md)
 
