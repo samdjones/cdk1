@@ -19,6 +19,21 @@ The two environments use different ADOT packaging because of their different exe
 
 ## Lambda: ADOT Lambda Layer
 
+### Migration summary: legacy layer → `AWSOpenTelemetryDistroJs`
+
+All 3 Lambdas moved from the legacy `aws-otel-nodejs-*` layer to AWS's new/recommended `AWSOpenTelemetryDistroJs` layer. What changed:
+
+| | Legacy layer | `AWSOpenTelemetryDistroJs` |
+|---|---|---|
+| Layer account | `901920570463` | AWS's own, `615299751070` |
+| Exec wrapper | `/opt/otel-handler` | `/opt/otel-instrument` |
+| Collector | Embedded (18–30MB layer) | None — direct OTLP/HTTP to AWS, SigV4-signed (2MB layer) |
+| Default instrumentations | Everything on | Narrower: `aws-sdk`, `aws-lambda`, `http` only |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` (to embedded collector) | Unset — endpoint doesn't support gRPC, layer defaults to `http/protobuf` |
+| Application Signals | N/A | Defaults `true`; explicitly forced `false` here to stay in-scope (plain X-Ray only) |
+
+To restore full instrumentation coverage (`undici`/`fetch()`, which `xray-dog-fetcher` needs) `OTEL_NODE_DISABLED_INSTRUMENTATIONS=none` had to be added. No IAM changes were needed. Live-verified post-migration via `aws xray batch-get-traces` — all 19 segments of an invocation land under one trace ID, same connected shape as before. Full rationale below and in commits d8257d4, d0353ed, f1cded0.
+
 ### How it works
 
 This uses the **new/recommended** ADOT Lambda approach ([aws-otel.github.io/docs/getting-started/lambda](https://aws-otel.github.io/docs/getting-started/lambda)), not the legacy `aws-otel-nodejs-*` layer + `/opt/otel-handler` setup (still documented at the now-superseded [`lambda-js`](https://aws-otel.github.io/docs/getting-started/lambda/lambda-js) page) this repo used before. The new approach is built around **CloudWatch Application Signals**, but Application Signals is **deliberately not enabled here** — this migrates only the existing X-Ray tracing functionality; see [Application Signals: deliberately not enabled](#application-signals-deliberately-not-enabled) below.
@@ -276,6 +291,8 @@ xray-invoker Lambda
 ```
 
 There is no SNS in this chain — `xray-dog-fetcher` calls `xray-s3-writer` with a plain `LambdaClient` `InvokeCommand`, same as the ECS app calls `xray-dog-fetcher`.
+
+**The ALB itself does not propagate the trace header.** Confirmed via `aws xray get-trace-summaries`: requests routed through the shared ALB to `xray-idp` (`/idp`, `/idp/*`) show up as their own standalone traces, entry point `xray-idp`, never joined to the `xray-invoker` root trace — unlike Envoy, the ALB listener has no X-Ray tracer of its own to read/re-parent the header. This is expected, not a bug: it only affects the ALB-routed leg to `xray-idp`; `xray-frontend`'s own CloudMap side-call to `xray-idp` (bypassing the ALB) does stay connected to the parent trace, and everything else in the chain (Envoy, `xray-frontend`, `xray-dog-fetcher`, `xray-s3-writer`, S3) connects correctly under one trace ID.
 
 ### Envoy: participating in the trace
 
