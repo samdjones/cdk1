@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repo hosts two independent, disposable AWS CDK demos, each fully self-contained:
 
-- **x-ray/** — end-to-end distributed tracing (X-Ray/OTel) across a Lambda trigger, an Envoy-fronted ECS Fargate app, a second independent ECS Fargate backend reached via CloudMap, two more Lambdas, and S3. Deploys as three CloudFormation stacks (`XraySharedStack`, `XrayIdpStack`, `XrayFrontendStack`).
+- **x-ray/** — end-to-end distributed tracing (X-Ray/OTel) across a Lambda trigger, an Envoy-fronted ECS Fargate app, a second independent Envoy-fronted ECS Fargate backend also reached via CloudMap, two more Lambdas, and S3. Deploys as three CloudFormation stacks (`XraySharedStack`, `XrayIdpStack`, `XrayFrontendStack`).
 - **alb/** — an ALB doing path-based routing across 3 ECS Fargate backends (`main`, `auth`, `default`). A single stack (`AlbPocStack`).
 
 Every command below is run from *within* the relevant stack's subdirectory (`x-ray/` or `alb/`), not from the repo root, unless noted otherwise. The repo root only holds a shared `package.json` (the `aws-cdk` CLI devDependency, resolved via `npx` from either subdirectory).
@@ -66,16 +66,16 @@ npx cdk diff --all --app "python app_xray.py"
 
 ### x-ray — XraySharedStack / XrayIdpStack / XrayFrontendStack
 
-A trigger Lambda (`xray-invoker`) calls a shared public ALB, which path-routes `/idp` and `/idp/*` to a `xray-idp` Next.js backend and everything else to a pass-through Envoy sidecar in front of an `xray-frontend` Express app. Before doing its own work, `xray-frontend` makes a best-effort side-call to `xray-idp` over CloudMap (bypassing the ALB), then invokes a `xray-dog-fetcher` Lambda that calls the public Dog CEO API and directly invokes `xray-s3-writer` to persist the result to S3. Every hop is instrumented for distributed tracing, including the Envoy hop itself:
+A trigger Lambda (`xray-invoker`) calls a shared public ALB, which path-routes `/idp` and `/idp/*` through a pass-through Envoy sidecar to a `xray-idp` Next.js backend, and everything else through another Envoy sidecar to an `xray-frontend` Express app. Before doing its own work, `xray-frontend` makes a best-effort side-call to `xray-idp` over CloudMap (bypassing both the ALB and Envoy), then invokes a `xray-dog-fetcher` Lambda that calls the public Dog CEO API and directly invokes `xray-s3-writer` to persist the result to S3. Every hop is instrumented for distributed tracing, including both Envoy hops (note: the ALB itself doesn't propagate the trace header, so ALB-routed `xray-idp` traffic shows up as its own disconnected trace rather than joining the invoker's — see `docs/xray-collector-setup.md`):
 
 - **Lambdas** — X-Ray active tracing + `AWSOpenTelemetryDistroJs` ADOT Lambda layer (`AWS_LAMBDA_EXEC_WRAPPER=/opt/otel-instrument`; Application Signals deliberately left off — plain X-Ray export only).
 - **ECS Fargate** (`xray-frontend`, `xray-idp`) — AWS OTEL Collector sidecar exporting to X-Ray; each app container loads the ADOT Node.js agent via `NODE_OPTIONS`.
-- **Envoy** — pass-through reverse proxy in front of `xray-frontend`, participates in the trace via its native `envoy.tracers.xray` provider.
+- **Envoy** — pass-through reverse proxy in front of each service's ALB ingress route (`x-ray/envoy/` for `xray-frontend`, `x-ray/envoy-idp/` for `xray-idp`), each participating in the trace via its own `envoy.tracers.xray` provider and distinct `segment_name`.
 
 Deploys as three CloudFormation stacks for learning purposes (a single stack works fine at this scale; the split exists to demonstrate cross-stack CDK patterns):
 
 - **`XraySharedStack`** — VPC (2 AZs, public/private subnets), the public ALB + listener (static default action, no targets), CloudMap private DNS namespace.
-- **`XrayIdpStack`** — `xray-idp` cluster/task/service, registered on the shared ALB and in CloudMap. Depends on `XraySharedStack`.
+- **`XrayIdpStack`** — `xray-idp` cluster/task/service (with Envoy), registered on the shared ALB and in CloudMap. Depends on `XraySharedStack`.
 - **`XrayFrontendStack`** — `xray-frontend` cluster/task/service (with Envoy), the 3 Lambda functions, 1 S3 bucket. Depends on `XraySharedStack` and `XrayIdpStack`.
 
 See `x-ray/docs/xray-collector-setup.md` for the full OTel/X-Ray wiring, `x-ray/docs/envoy.md` and `x-ray/docs/cloudmap.md` for those two components, `x-ray/docs/multi-stack.md` for why/how the 3-stack split works, and `x-ray/iac/xray_poc/` (`shared_stack.py`, `idp_stack.py`, `frontend_stack.py`) for the stack definitions.
