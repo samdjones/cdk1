@@ -1,20 +1,23 @@
 # Envoy Sidecar
 
-This document explains the Envoy proxy sitting in front of the `xray-frontend` app container, its configuration (`x-ray/envoy/`), and how it was made to participate in X-Ray tracing rather than just pass requests through invisibly.
+This document explains the Envoy proxies sitting in front of the `xray-frontend` and `xray-idp` app containers, their configuration (`x-ray/envoy/` and `x-ray/envoy-idp/` respectively), and how each was made to participate in X-Ray tracing rather than just pass requests through invisibly.
 
 ## What it does
 
-Before Envoy, the ALB targeted the `xray-frontend` app container directly. Now it targets Envoy, which forwards everything to the app on localhost:
+Before Envoy, the ALB targeted each app container directly. Now it targets Envoy in front of each service, which forwards everything to its app on localhost:
 
 ```
-ALB → Envoy (:8080) → xray-frontend app (:8000)
+ALB → Envoy (:8080) → xray-frontend app (:8000)          [x-ray/envoy/]
+ALB → Envoy (:8080) → xray-idp app (:3000)                [x-ray/envoy-idp/]
 ```
 
-It's a pure pass-through — no auth, no rate limiting, no request/response transformation. The point of this stack is to demonstrate the wiring, not to build a real gateway.
+Each is a pure pass-through — no auth, no rate limiting, no request/response transformation. The point of this stack is to demonstrate the wiring, not to build a real gateway. `xray-idp`'s Envoy only fronts its ALB ingress route: `xray-frontend`'s CloudMap side-call to `xray-idp` (`idp.xray.local:3000`) bypasses it, the same way that call already bypasses the ALB — see [`docs/xray-collector-setup.md`](xray-collector-setup.md#trace-context-propagation).
+
+The two configs are near-identical copies rather than one shared/parameterized asset — appropriate for a repo whose stated purpose (per the stacks' own docstrings) is demonstrating wiring patterns, not minimizing duplication. The only differences: the upstream cluster's port (8000 vs. 3000) and the X-Ray `segment_name` (`envoy-proxy` vs. `idp-envoy-proxy`) — the latter has to differ so the two show up as distinct nodes in the X-Ray service map instead of merging into one.
 
 ## Why distroless
 
-`x-ray/envoy/Dockerfile` builds from `docker.io/envoyproxy/envoy-distroless:v1.31-latest` rather than the standard `envoyproxy/envoy` image. The distroless variant strips out the shell and package manager, leaving just the `envoy` binary and its runtime dependencies — smaller image, smaller attack surface, appropriate for a container that does nothing but proxy traffic on a static config file.
+Both `x-ray/envoy/Dockerfile` and `x-ray/envoy-idp/Dockerfile` build from `docker.io/envoyproxy/envoy-distroless:v1.31-latest` rather than the standard `envoyproxy/envoy` image. The distroless variant strips out the shell and package manager, leaving just the `envoy` binary and its runtime dependencies — smaller image, smaller attack surface, appropriate for a container that does nothing but proxy traffic on a static config file.
 
 One consequence: distroless has no shell, so there's no `docker-entrypoint.sh` to fall back on. The Dockerfile sets `ENTRYPOINT`/`CMD` to invoke the binary directly instead of relying on whatever the base image's default entrypoint does:
 
@@ -27,7 +30,7 @@ CMD ["-c", "/etc/envoy/envoy.yaml"]
 
 `deploy.sh` runs CDK with `CDK_DOCKER=podman`. Podman here has no unqualified-search registries configured, so a bare `FROM envoyproxy/envoy-distroless:...` fails to resolve at build time (`short-name did not resolve to an alias`) — reproduced locally before it became a live deploy failure. The Dockerfile uses the fully-qualified `docker.io/envoyproxy/envoy-distroless:v1.31-latest`, matching the existing convention already used for the OTel collector image (`public.ecr.aws/aws-observability/aws-otel-collector:latest`) in `xray_stack.py`.
 
-## Config walkthrough (`x-ray/envoy/envoy.yaml`)
+## Config walkthrough (`x-ray/envoy/envoy.yaml`, `x-ray/envoy-idp/envoy.yaml`)
 
 **Listener** — `0.0.0.0:8080`, one filter chain running `envoy.filters.network.http_connection_manager`.
 
@@ -41,19 +44,19 @@ route:
 
 Envoy's default route timeout is 15 seconds. The app's `/fetch-dog` handler chains ECS → Lambda → dog.ceo → Lambda → S3, which can run past that on a slow request, while the ALB's own idle timeout is 60 seconds — so 15s would make Envoy the tightest, least visible timeout in the chain (a silent 504 mid-trace). 60s matches the ALB instead.
 
-**Cluster** — `app_cluster` is `STATIC`, one endpoint at `127.0.0.1:8000`. Static and loopback because Envoy and the app share the same Fargate task's network namespace (`awsvpc` mode) — no service discovery needed, the app is always reachable at localhost.
+**Cluster** — `app_cluster` is `STATIC`, one endpoint at `127.0.0.1:8000` (`127.0.0.1:3000` for `xray-idp`'s Envoy). Static and loopback because Envoy and the app share the same Fargate task's network namespace (`awsvpc` mode) — no service discovery needed, the app is always reachable at localhost.
 
 **Admin** — bound to `127.0.0.1:9901`, not exposed outside the task.
 
-## CDK wiring (`xray_stack.py`)
+## CDK wiring (`frontend_stack.py`, `idp_stack.py`)
 
-Envoy is added as another container on the same task definition as the app and the OTel collector sidecar, essential (if it dies, the task should be considered unhealthy):
+In both stacks, Envoy is added as another container on the same task definition as the app and the OTel collector sidecar, essential (if it dies, the task should be considered unhealthy). `idp_stack.py`:
 
 ```python
 envoy_container = task_definition.add_container(
-    "EnvoyProxy",
-    image=ecs.ContainerImage.from_asset("envoy"),
-    logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-envoy"),
+    "IdpEnvoyProxy",
+    image=ecs.ContainerImage.from_asset("envoy-idp"),
+    logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-idp-envoy"),
     essential=True,
 )
 envoy_container.add_port_mappings(ecs.PortMapping(container_port=8080))
@@ -61,7 +64,9 @@ envoy_container.add_port_mappings(ecs.PortMapping(container_port=8080))
 task_definition.default_container = envoy_container
 ```
 
-That last line is the important one: with two essential containers on the task (app + Envoy), CDK can no longer infer which one the ALB target group should point at, so it has to be set explicitly. Once set, the ALB registers against Envoy's container/port instead of the app's.
+That last line is the important one: with two essential containers on the task (app + Envoy), CDK can no longer infer which one the ALB target group should point at, so it has to be set explicitly. Once set, the ALB registers against Envoy's container/port instead of the app's — confirmed in the synthesized template's `AWS::ECS::Service` `LoadBalancers` property (`ContainerName: IdpEnvoyProxy`, `ContainerPort: 8080`).
+
+`idp_stack.py`'s `CloudMapOptions` still passes `container_port=self.container_port` (3000, the app's port) explicitly, so `xray-frontend`'s side-call keeps resolving straight to the app container regardless of which container is now `default_container` — that field only matters for CloudMap's optional SRV records, and this stack uses a plain `A` record (an IP, not a port), so in practice it wasn't even at risk, but the CDK code was already explicit about it before this change and stays that way.
 
 ## Tracing: `envoy.tracers.xray`
 
@@ -82,7 +87,7 @@ tracing:
 
 - **`envoy.tracers.xray`**, not `envoy.tracers.opentelemetry` — this is Envoy's built-in X-Ray tracer (the same one App Mesh uses). It natively reads/writes the `X-Amzn-Trace-Id` header format, so it stitches into the *same* trace as everything else. The generic OTel tracer provider defaults to W3C `traceparent` propagation and would have produced a second, disconnected trace.
 - **`daemon_endpoint`** sends segments via the classic UDP X-Ray-daemon wire protocol to the OTel collector sidecar's `awsxray` receiver on `127.0.0.1:2000` — see [`docs/xray-collector-setup.md`](xray-collector-setup.md) for that receiver's config. This field had to be spelled out explicitly: Envoy's own docs describe a "defaults to 127.0.0.1:2000" behavior for an *unset* field, but leaving it out entirely produced `X-Ray daemon endpoint must be a UDP socket address` from Envoy's own config validator (`envoy --mode validate`) — caught locally, before it ever reached a live deploy.
-- **`segment_name: envoy-proxy`** — required field, this is the name that shows up in the X-Ray service map.
+- **`segment_name: envoy-proxy`** (`idp-envoy-proxy` in `envoy-idp/envoy.yaml`) — required field, this is the name that shows up in the X-Ray service map. Deliberately different between the two so they don't collapse into a single ambiguous node.
 
 ## How it was verified
 
@@ -92,3 +97,5 @@ Before deploying, the built image was run locally with `--network host` (to mimi
 2. **Re-parenting behavior** — a request was sent with a fake `X-Amzn-Trace-Id` header (`Parent=0000000000000001`). The request that Envoy forwarded to the backend carried a *different* `Parent` (Envoy's own freshly-generated segment ID) while keeping the same `Root` (trace ID unchanged). That's the mechanism that makes Envoy a real, correctly-nested hop in the trace rather than just a transparent pass-through — proof the tracer is active even without a real X-Ray daemon listening on the loopback UDP port locally (the send is fire-and-forget UDP, so the app-facing behavior — the header rewrite — is what's checkable without one).
 
 After deploying, a real trace confirmed the same thing end-to-end: the `envoy-proxy` segment sits between the invoker Lambda's outbound call and the `xray-frontend` segment, both under the same trace ID.
+
+`xray-idp`'s Envoy (`envoy-idp/`) reuses this same config shape and was validated the same way (`envoy --mode validate`) before being wired into `idp_stack.py`. It shows up as `idp-envoy-proxy` in the service map whenever `xray-idp` is reached through the ALB (`/idp`, `/idp/*`) — which, per [`docs/xray-collector-setup.md`](xray-collector-setup.md#trace-context-propagation), never joins the same trace as `xray-invoker` anyway, since the ALB itself doesn't propagate `X-Amzn-Trace-Id`. It will not appear on `xray-frontend`'s CloudMap side-call to `xray-idp`, since that call bypasses both the ALB and this Envoy entirely.

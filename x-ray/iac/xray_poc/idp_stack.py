@@ -15,8 +15,10 @@ from xray_poc.shared_stack import XraySharedStack
 class XrayIdpStack(Stack):
     """
     The xray-idp backend: its own ECS cluster, task, and service, registered
-    both on the shared ALB (for the public /idp, /idp/* paths) and in
-    CloudMap (for XrayFrontendStack's private side-call). No Envoy sidecar.
+    both on the shared ALB (for the public /idp, /idp/* paths, fronted by
+    an Envoy sidecar - see docs/envoy.md) and in CloudMap (for
+    XrayFrontendStack's private side-call, which reaches the app container
+    directly and bypasses Envoy, same as it bypasses the ALB).
 
     Depends on XraySharedStack for the VPC, the ALB listener, and the
     CloudMap namespace - all read-only cross-stack references, no mutation
@@ -94,6 +96,33 @@ class XrayIdpStack(Stack):
         )
         otel_container.add_port_mappings(ecs.PortMapping(container_port=4317))
         otel_container.add_port_mappings(ecs.PortMapping(container_port=4318))
+
+        # ── Envoy sidecar (pass-through reverse proxy in front of the app) ──
+        # Same distroless pattern as XrayFrontendStack's Envoy - see
+        # docs/envoy.md - but its own asset (x-ray/envoy-idp/) since the
+        # upstream port (3000, not 8000) and X-Ray segment_name
+        # (idp-envoy-proxy, not envoy-proxy) both need to differ so this
+        # shows up as its own distinct node in the service map. Only fronts
+        # the ALB ingress route; XrayFrontendStack's CloudMap side-call to
+        # idp still bypasses it, same as it already bypasses the ALB.
+        envoy_container = task_definition.add_container(
+            "IdpEnvoyProxy",
+            image=ecs.ContainerImage.from_asset("envoy-idp"),
+            logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-idp-envoy"),
+            essential=True,
+        )
+        envoy_container.add_port_mappings(ecs.PortMapping(container_port=8080))
+
+        envoy_container.add_container_dependencies(
+            ecs.ContainerDependency(
+                container=app_container,
+                condition=ecs.ContainerDependencyCondition.START,
+            )
+        )
+
+        # Envoy now fronts the task, so it - not the app container - is the
+        # ALB's target.
+        task_definition.default_container = envoy_container
 
         # ── ECS Service ──────────────────────────────────────────────────────
         service = ecs.FargateService(
