@@ -9,6 +9,7 @@ from aws_cdk import (
     aws_s3 as s3,
     aws_iam as iam,
     aws_elasticloadbalancingv2 as elbv2,
+    aws_applicationsignals as appsignals,
 )
 from constructs import Construct
 
@@ -74,13 +75,23 @@ class XrayFrontendStack(Stack):
             # default that xray-dog-fetcher's fetch() call to the Dog CEO
             # API relies on for its own span.
             "OTEL_NODE_DISABLED_INSTRUMENTATIONS": "none",
-            # Not enabled yet - deliberately deferred, see PR description.
-            # Flipping to "true" also requires attaching the
+            # Enabled - see docs/xray-collector-setup.md. Also requires the
             # CloudWatchLambdaApplicationSignalsExecutionRolePolicy managed
-            # policy to each function's role and adding an
-            # applicationsignals.CfnDiscovery resource once per account.
-            "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "false",
+            # policy on each function's role (below) and the one-time
+            # CfnDiscovery resource per account/region (also below).
+            "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "true",
         }
+
+        # One-time, account/region-scoped resource that opts the account in
+        # to Application Signals service discovery. Only needs to exist
+        # once per account/region - placed here (not in XraySharedStack)
+        # because this is the stack that actually enables Application
+        # Signals on anything.
+        appsignals.CfnDiscovery(self, "ApplicationSignalsDiscovery")
+
+        application_signals_policy = iam.ManagedPolicy.from_aws_managed_policy_name(
+            "CloudWatchLambdaApplicationSignalsExecutionRolePolicy"
+        )
 
         # ── S3 Bucket ──────────────────────────────────────────────────────
         dog_bucket = s3.Bucket(
@@ -110,6 +121,7 @@ class XrayFrontendStack(Stack):
         )
 
         dog_bucket.grant_write(xray_s3_writer_fn)
+        xray_s3_writer_fn.role.add_managed_policy(application_signals_policy)
 
         # ── Lambda Dog Fetcher ─────────────────────────────────────────────
         xray_dog_fetcher_fn = lambda_.Function(
@@ -130,6 +142,7 @@ class XrayFrontendStack(Stack):
         )
 
         xray_s3_writer_fn.grant_invoke(xray_dog_fetcher_fn)
+        xray_dog_fetcher_fn.role.add_managed_policy(application_signals_policy)
 
         # ── ECS Cluster ────────────────────────────────────────────────────
         cluster = ecs.Cluster(
@@ -315,6 +328,7 @@ class XrayFrontendStack(Stack):
             timeout=Duration.seconds(30),
             memory_size=256,
         )
+        xray_invoker_fn.role.add_managed_policy(application_signals_policy)
 
         # ── CloudFormation Outputs ─────────────────────────────────────────
         CfnOutput(
