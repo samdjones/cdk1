@@ -29,9 +29,16 @@ COPY --from=builder /app/next.config.js ./
 # OTEL auto-instrumentation via ADOT agent
 ENV NODE_OPTIONS="--require @aws/aws-distro-opentelemetry-node-autoinstrumentation/register"
 
-# OTEL collector sidecar endpoint (localhost since containers share network in Fargate awsvpc mode)
-ENV OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"
-ENV OTEL_EXPORTER_OTLP_PROTOCOL="grpc"
+# CloudWatch Agent sidecar endpoint - Application Signals traces + metrics
+# (localhost since containers share network in Fargate awsvpc mode)
+ENV OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+ENV OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://localhost:4316/v1/traces"
+ENV OTEL_AWS_APPLICATION_SIGNALS_EXPORTER_ENDPOINT="http://localhost:4316/v1/metrics"
+ENV OTEL_METRICS_EXPORTER="none"
+ENV OTEL_LOGS_EXPORTER="none"
+ENV OTEL_TRACES_SAMPLER="xray"
+ENV OTEL_TRACES_SAMPLER_ARG="endpoint=http://localhost:2000"
+ENV OTEL_AWS_APPLICATION_SIGNALS_ENABLED="true"
 
 # Service name for traces
 ENV OTEL_SERVICE_NAME="xray-idp"

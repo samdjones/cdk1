@@ -10,10 +10,10 @@ The two environments use different ADOT packaging because of their different exe
 
 | | Lambda | ECS Fargate |
 |---|---|---|
-| Collector packaging | None — Lambda Layer talks directly to AWS | Sidecar container |
+| Collector packaging | None — Lambda Layer talks directly to AWS | Two sidecar containers: CloudWatch Agent and OTel collector |
 | Auto-instrumentation | `otel-instrument` exec wrapper | Node.js agent via `NODE_OPTIONS` |
-| Collector config | N/A (no local collector) | `ecs-default-config.yaml` (baked into image) |
-| Export destination | X-Ray, direct OTLP/HTTP (SigV4-signed) | X-Ray (via OTEL collector sidecar) |
+| Collector config | N/A (no local collector) | CloudWatch Agent: `CW_CONFIG_CONTENT`; OTel collector: `ecs-default-config.yaml` (baked into image) |
+| Export destination | X-Ray, direct OTLP/HTTP (SigV4-signed) | App: X-Ray and Application Signals (via CloudWatch Agent). Envoy: X-Ray (via OTel collector) |
 
 ---
 
@@ -132,16 +132,40 @@ Not set (left to the layer's own defaults): `OTEL_EXPORTER_OTLP_PROTOCOL` (defau
 
 ---
 
-## ECS Fargate: OTEL Collector Sidecar
+## ECS Fargate: CloudWatch Agent and OTel Collector Sidecars
 
 ### Why a sidecar?
 
 ECS tasks are long-running processes. Instead of embedding a collector inside the app (which would couple concerns and consume app memory), the ADOT collector runs as a **separate container in the same Fargate task**. Containers in the same Fargate task share a network namespace, meaning they can communicate via `localhost`.
 
-### Sidecar container definition
+Each ECS task runs two telemetry sidecars:
+
+| Sidecar | Sends it | Ports used |
+|---|---|---|
+| CloudWatch Agent | App traces and Application Signals metrics | 4316 (OTLP/HTTP), TCP 2000 (X-Ray sampling rules) |
+| OTel collector | Envoy segments | UDP 2000 (X-Ray daemon protocol) |
+
+The two can share port 2000 because one listens on TCP and the other on UDP.
+
+### CloudWatch Agent sidecar
+
+`add_cloudwatch_agent_sidecar()` in `iac/xray_poc/app_signals.py` adds this container to both tasks, along with the `CloudWatchAgentServerPolicy` managed policy on the task role. The `application_signals` entries in `CW_CONFIG_CONTENT` turn on the OTLP receiver, the sampling endpoint, the Latency/Error/Fault metrics, and the trace export to X-Ray:
 
 ```python
-# iac/xray_poc/xray_stack.py
+environment={
+    "CW_CONFIG_CONTENT": json.dumps(
+        {
+            "traces": {"traces_collected": {"application_signals": {}}},
+            "logs": {"metrics_collected": {"application_signals": {}}},
+        }
+    ),
+},
+```
+
+### OTel collector sidecar
+
+```python
+# iac/xray_poc/frontend_stack.py
 otel_container = task_definition.add_container(
     "OtelCollector",
     image=ecs.ContainerImage.from_registry(
@@ -151,11 +175,9 @@ otel_container = task_definition.add_container(
     essential=False,
     environment={"AWS_REGION": Stack.of(self).region},
 )
-otel_container.add_port_mappings(ecs.PortMapping(container_port=4317))  # gRPC
-otel_container.add_port_mappings(ecs.PortMapping(container_port=4318))  # HTTP
 ```
 
-`essential=False` means the task keeps running if the collector crashes — the app degrades gracefully (losing traces) rather than failing entirely.
+`essential=False` means the task keeps running if the collector crashes — only Envoy's segments are lost. The CloudWatch Agent is also `essential=False`, so if it crashes the app keeps serving but loses its traces and metrics.
 
 ### The default ECS config
 
@@ -200,7 +222,7 @@ service:
       exporters: [awsemf]
 ```
 
-The `awsxray` UDP receiver on port 2000 is a compatibility shim for tools that speak the classic X-Ray daemon wire protocol instead of OTLP — that's what `AWS_XRAY_DAEMON_ADDRESS=localhost:2000` on the app container is for (unused fallback, since the app exports via OTLP to port 4317), and it's what Envoy's native X-Ray tracer uses to submit its own segments. See [`docs/envoy.md`](envoy.md).
+The `awsxray` UDP receiver on port 2000 is a compatibility shim for tools that speak the classic X-Ray daemon wire protocol instead of OTLP — that's what `AWS_XRAY_DAEMON_ADDRESS=localhost:2000` on the app container is for (unused fallback, since the app exports via OTLP to the CloudWatch Agent on port 4316), and it's what Envoy's native X-Ray tracer uses to submit its own segments. See [`docs/envoy.md`](envoy.md).
 
 ### App container: ADOT Node.js agent
 
@@ -225,18 +247,11 @@ The underlying `register` script (whichever way it's loaded) initialises the OTe
 - `http`/`https` — outbound HTTP calls
 - `undici` — outbound global `fetch()` calls (see [Manual vs. automatic propagation](#manual-vs-automatic-propagation) below — the Lambda layer bundles this instrumentation too, but that alone isn't enough to keep `xray-invoker` connected to the rest of the trace; a manual header is still required there for a different reason)
 
-The agent is configured to send traces to the sidecar via:
-
-```python
-"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
-"OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
-```
-
-`localhost:4317` reaches the OTEL collector sidecar because both containers share the Fargate task's network namespace.
+The agent is configured to send traces and metrics to the CloudWatch Agent sidecar via `APP_SIGNALS_OTEL_ENV` in `iac/xray_poc/app_signals.py`, listed in the [environment variables summary](#environment-variables-summary) below. `localhost:4316` reaches the sidecar because both containers share the Fargate task's network namespace.
 
 ### IAM permissions
 
-The ECS task role needs X-Ray write permissions. The collector exports on behalf of the task role:
+The ECS task role needs X-Ray write permissions, plus the `CloudWatchAgentServerPolicy` managed policy for the CloudWatch Agent. Both sidecars export on behalf of the task role:
 
 ```python
 task_definition.task_role.add_to_policy(
@@ -259,15 +274,20 @@ Lambda functions get X-Ray permissions automatically when `tracing=ACTIVE` is se
 
 ```
 NODE_OPTIONS=--require /app/otel-bootstrap.js        # wraps the ADOT register script, see above
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317   # sidecar gRPC endpoint
-OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4316/v1/traces               # CloudWatch Agent
+OTEL_AWS_APPLICATION_SIGNALS_EXPORTER_ENDPOINT=http://localhost:4316/v1/metrics  # CloudWatch Agent
+OTEL_METRICS_EXPORTER=none
+OTEL_LOGS_EXPORTER=none
+OTEL_TRACES_SAMPLER=xray
+OTEL_TRACES_SAMPLER_ARG=endpoint=http://localhost:2000                           # CloudWatch Agent, TCP
 OTEL_SERVICE_NAME=xray-frontend                      # appears in X-Ray service map
 OTEL_PROPAGATORS=xray                                # X-Ray trace context propagation
 AWS_XRAY_DAEMON_ADDRESS=localhost:2000               # fallback daemon address; also where Envoy's native tracer sends segments, see docs/envoy.md
 OTEL_AWS_APPLICATION_SIGNALS_ENABLED=true
 ```
 
-`xray-idp` (`app-idp/`) uses the same collector-sidecar pattern with the same environment variables (`OTEL_SERVICE_NAME=xray-idp`), minus the `otel-bootstrap.js` wrapper — it requires `@aws/aws-distro-opentelemetry-node-autoinstrumentation/register` directly, since it has no Envoy sidecar and no need for the credentials-span renaming.
+`xray-idp` (`app-idp/`) uses the same two sidecars with the same environment variables (`OTEL_SERVICE_NAME=xray-idp`), minus the `otel-bootstrap.js` wrapper — it requires `@aws/aws-distro-opentelemetry-node-autoinstrumentation/register` directly, since it has no need for the credentials-span renaming.
 
 ---
 
