@@ -30,7 +30,7 @@ All 3 Lambdas moved from the legacy `aws-otel-nodejs-*` layer to AWS's new/recom
 | Collector | Embedded (18–30MB layer) | None — direct OTLP/HTTP to AWS, SigV4-signed (2MB layer) |
 | Default instrumentations | Everything on | Narrower: `aws-sdk`, `aws-lambda`, `http` only |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` (to embedded collector) | Unset — endpoint doesn't support gRPC, layer defaults to `http/protobuf` |
-| Application Signals | N/A | Defaults `true`; explicitly forced `false` here to stay in-scope (plain X-Ray only) |
+| Application Signals | N/A | Defaults `true`; forced `false` in this migration to stay in-scope (plain X-Ray only) — since turned on, see [below](#application-signals-enabled) |
 
 To restore full instrumentation coverage (`undici`/`fetch()`, which `xray-dog-fetcher` needs) `OTEL_NODE_DISABLED_INSTRUMENTATIONS=none` had to be added. No IAM changes were needed. Live-verified post-migration via `aws xray batch-get-traces` — all 19 segments of an invocation land under one trace ID, same connected shape as before. Full rationale below and in commits d8257d4, d0353ed, f1cded0.
 
@@ -85,15 +85,18 @@ This is AWS's own documented mechanism for this — see [Enabling all library in
 
 The legacy layer's environment set `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` (gRPC to the embedded local collector). This layer has no local collector to gRPC to, and — confirmed against AWS's own [OTLP Endpoints](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-OTLPEndpoint.html) docs — **the X-Ray OTLP traces endpoint only supports HTTP, not gRPC** at all. So this env var is left unset here, letting the layer's own `http/protobuf` default apply; setting `grpc` would silently break export.
 
-### Application Signals: deliberately not enabled
+### Application Signals: enabled
 
 ```python
-"OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "false",
+"OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "true",
 ```
 
-The layer defaults this to `true` if unset — so it has to be explicitly forced off here to keep this migration scoped to "same X-Ray tracing, new layer" rather than also turning on Application Signals' APM dashboards/SLOs. Confirmed by reading the layer's `wrapper.js`: when this is `"false"` and no explicit `OTEL_EXPORTER_OTLP_ENDPOINT` is set, it auto-configures `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://xray.<region>.amazonaws.com/v1/traces` — AWS's native OTLP-to-X-Ray ingestion endpoint — which is exactly the plain-X-Ray behavior this migration is meant to preserve.
+The layer defaults this to `true` if unset; it's set explicitly here anyway for clarity, now that this repo actually turns Application Signals' APM dashboards/SLOs on for the 3 Lambdas rather than only reusing the layer for its plain-X-Ray export path.
 
-Turning Application Signals on later (out of scope for this change) would additionally require attaching the AWS-managed `CloudWatchLambdaApplicationSignalsExecutionRolePolicy` IAM policy to each function's role, and a one-time `aws_applicationsignals.CfnDiscovery` CDK resource per account/region.
+Two more things were needed beyond the env var (both in `frontend_stack.py`):
+
+- The AWS-managed `CloudWatchLambdaApplicationSignalsExecutionRolePolicy` IAM policy, attached to each of the 3 functions' roles via `role.add_managed_policy(...)`.
+- A one-time, account/region-scoped `appsignals.CfnDiscovery(self, "ApplicationSignalsDiscovery")` CDK resource that opts the account/region in to Application Signals service discovery. It has no props and isn't tied to any one function — it's created once in `XrayFrontendStack` since that's the stack that turns Application Signals on.
 
 ### IAM permissions
 
@@ -122,10 +125,10 @@ AWS_LAMBDA_EXEC_WRAPPER=/opt/otel-instrument       # activates the layer's wrapp
 OTEL_PROPAGATORS=xray                               # use X-Ray trace context format
 OTEL_TRACES_EXPORTER=otlp                           # export via OTLP (redundant with the layer's own default, kept explicit)
 OTEL_NODE_DISABLED_INSTRUMENTATIONS=none            # restore full instrumentation coverage (see above)
-OTEL_AWS_APPLICATION_SIGNALS_ENABLED=false           # keep plain X-Ray export, no Application Signals (see above)
+OTEL_AWS_APPLICATION_SIGNALS_ENABLED=true            # turn on Application Signals APM (see above)
 ```
 
-Not set (left to the layer's own defaults, since overriding them would be wrong here): `OTEL_EXPORTER_OTLP_PROTOCOL` (defaults to `http/protobuf`; the X-Ray OTLP endpoint doesn't support gRPC) and `OTEL_EXPORTER_OTLP_ENDPOINT`/`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (auto-derived from `AWS_REGION` once Application Signals is off).
+Not set (left to the layer's own defaults): `OTEL_EXPORTER_OTLP_PROTOCOL` (defaults to `http/protobuf`; the X-Ray OTLP endpoint doesn't support gRPC) and `OTEL_EXPORTER_OTLP_ENDPOINT`/`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (auto-derived from `AWS_REGION`).
 
 ---
 
