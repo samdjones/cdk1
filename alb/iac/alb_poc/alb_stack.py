@@ -8,6 +8,8 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from alb_poc.emulator import container_image
+
 
 class AlbPocStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
@@ -94,7 +96,7 @@ class AlbPocStack(Stack):
             )
             container = task_definition.add_container(
                 f"{name.capitalize()}Container",
-                image=ecs.ContainerImage.from_asset(f"app/{name}"),
+                image=container_image(self, f"app/{name}"),
                 environment={"SERVICE_NAME": name},
                 logging=ecs.LogDrivers.aws_logs(stream_prefix=f"alb-{name}"),
                 essential=True,
