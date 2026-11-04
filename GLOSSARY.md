@@ -9,7 +9,7 @@ Creating or updating a stack in real AWS.
 _Avoid_: Release, publish
 
 **Emulator test**:
-A manually triggered run that deploys the synthesized stacks into Floci, instead of AWS, and asserts on the resources created. It rehearses a deploy but never touches real AWS.
+A run, local or in CI, that deploys the synthesized stacks into Floci, instead of AWS, and asserts on the resources created. It rehearses a deploy but never touches real AWS.
 _Avoid_: Local deploy, integration test, smoke test
 
 **Floci**:

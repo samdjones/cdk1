@@ -3,9 +3,10 @@
 Rehearse a deploy locally, or in CI, before touching real AWS. An **emulator
 test** starts [Floci](https://floci.io) (a local AWS emulator) in a container,
 `cdk bootstrap`s and `cdk deploy`s the stacks into it, then runs pytest/boto3
-assertions against what was created. It is **manual only** - the
-`Emulator test` GitHub workflow is `workflow_dispatch`-only and `ci.yml` is
-unaffected.
+assertions against what was created. It runs automatically in CI - the
+`Emulator test` GitHub workflow triggers on every push and PR (and via
+`workflow_dispatch`) - and can be run locally. Only deploying to real AWS is
+manual.
 
 ```bash
 x-ray/ci/emulator_test.sh   # XraySharedStack, XrayIdpStack, XrayFrontendStack

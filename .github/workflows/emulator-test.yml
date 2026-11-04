@@ -1,8 +1,12 @@
 name: Emulator test
 
-# Manual only: deploys the CDK stacks into a local Floci AWS emulator and
-# asserts on the result. Never touches real AWS. See x-ray/docs/emulator-test.md.
+# Deploys the CDK stacks into a local Floci AWS emulator and asserts on the
+# result. Never touches real AWS. Runs on every push/PR and can be dispatched
+# manually. See x-ray/docs/emulator-test.md.
 on:
+  push:
+    branches: ["**"]
+  pull_request:
   workflow_dispatch:
     inputs:
       stack:
@@ -13,7 +17,7 @@ on:
 
 jobs:
   emulator-test-alb:
-    if: inputs.stack == 'all' || inputs.stack == 'alb'
+    if: inputs.stack == null || inputs.stack == 'all' || inputs.stack == 'alb'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +28,7 @@ jobs:
         run: bash alb/ci/emulator_test.sh
 
   emulator-test-xray:
-    if: inputs.stack == 'all' || inputs.stack == 'x-ray'
+    if: inputs.stack == null || inputs.stack == 'all' || inputs.stack == 'x-ray'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

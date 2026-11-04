@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Emulator test: deploy the three x-ray stacks into a local Floci AWS emulator
-# and assert on the resources created. Never touches real AWS. Run manually only.
+# and assert on the resources created. Never touches real AWS. Runs locally and in CI.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
