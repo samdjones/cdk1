@@ -25,6 +25,15 @@ cd alb && ./deploy.sh       # Build main/auth/default apps, deploy AlbPocStack
 cd alb && ./destroy.sh      # Destroy AlbPocStack
 ```
 
+### Emulator test
+
+Deploys the CDK stacks into a local Floci AWS emulator and asserts on the result, before deploying to real AWS. Runs automatically in CI (the `Emulator test` workflow, on push/PR, also `workflow_dispatch`) and locally. Only deploys to real AWS are manual. Uses `podman` by default (`CONTAINER_CLI=docker` to override). See `x-ray/docs/emulator-test.md`.
+
+```bash
+cd alb && ./ci/emulator_test.sh      # AlbPocStack
+cd x-ray && ./ci/emulator_test.sh    # all 3 x-ray stacks
+```
+
 ### App(s) (TypeScript/Express)
 
 Run from the relevant app directory, e.g. `x-ray/app-xray/` or `alb/app/main/`:

@@ -15,3 +15,19 @@ setup and usage.
 
 - Root `package.json` holds the `aws-cdk` CLI as a shared devDependency, used
   via `npx cdk ...` by both stacks' `deploy.sh` / `destroy.sh`.
+
+## Emulator test
+
+Rehearse a deploy against a local [Floci](https://floci.io) AWS emulator before
+deploying to real AWS - locally, or in CI, where the **Emulator test**
+GitHub workflow runs automatically on every push and PR (and can also be
+dispatched manually):
+
+```bash
+alb/ci/emulator_test.sh
+x-ray/ci/emulator_test.sh
+```
+
+Needs `podman` (or `CONTAINER_CLI=docker`). Deploy-and-assert only; no
+containers run. See [`x-ray/docs/emulator-test.md`](x-ray/docs/emulator-test.md)
+for what's skipped and why.
