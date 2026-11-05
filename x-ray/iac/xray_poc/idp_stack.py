@@ -100,7 +100,7 @@ class XrayIdpStack(Stack):
         )
 
         # ── CloudWatch Agent sidecar (Application Signals for this task) ──
-        add_cloudwatch_agent_sidecar(task_definition, "IdpCloudWatchAgent", "xray-idp-cwagent")
+        add_cloudwatch_agent_sidecar(task_definition, "IdpCloudWatchAgent", "xray-idp-cwagent", app_container)
 
         # ── Envoy sidecar (pass-through reverse proxy in front of the app) ──
         # Same distroless pattern as XrayFrontendStack's Envoy - see

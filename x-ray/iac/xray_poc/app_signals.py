@@ -23,6 +23,7 @@ def add_cloudwatch_agent_sidecar(
     task_definition: ecs.TaskDefinition,
     container_id: str,
     log_stream_prefix: str,
+    app_container: ecs.ContainerDefinition,
 ) -> ecs.ContainerDefinition:
     """
     Add the CloudWatch Agent sidecar and the task role policy it needs.
@@ -30,6 +31,9 @@ def add_cloudwatch_agent_sidecar(
     The agent receives the app's OTLP traces and Application Signals metrics
     on port 4316, serves X-Ray sampling rules on TCP port 2000, publishes
     service-level Latency/Error/Fault metrics, and exports the traces to X-Ray.
+
+    The app container is made to wait for this container to start, so the
+    app's first sampling-rule fetch and OTLP export don't hit ECONNREFUSED.
     """
     task_definition.task_role.add_managed_policy(
         iam.ManagedPolicy.from_aws_managed_policy_name("CloudWatchAgentServerPolicy")
@@ -51,4 +55,10 @@ def add_cloudwatch_agent_sidecar(
         essential=False,
     )
     container.add_port_mappings(ecs.PortMapping(container_port=4316))
+    app_container.add_container_dependencies(
+        ecs.ContainerDependency(
+            container=container,
+            condition=ecs.ContainerDependencyCondition.START,
+        )
+    )
     return container

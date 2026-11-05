@@ -226,7 +226,7 @@ class XrayFrontendStack(Stack):
         )
 
         # ── CloudWatch Agent sidecar (Application Signals for this task) ───
-        add_cloudwatch_agent_sidecar(task_definition, "CloudWatchAgent", "xray-cwagent")
+        add_cloudwatch_agent_sidecar(task_definition, "CloudWatchAgent", "xray-cwagent", app_container)
 
         # ── Envoy sidecar (pass-through reverse proxy in front of the app) ──
         envoy_container = task_definition.add_container(
