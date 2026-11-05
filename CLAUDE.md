@@ -32,7 +32,10 @@ Deploys the CDK stacks into a local Floci AWS emulator and asserts on the result
 ```bash
 cd alb && ./ci/emulator_test.sh      # AlbPocStack
 cd x-ray && ./ci/emulator_test.sh    # all 3 x-ray stacks
+cd alb && ./ci/e2e_test.sh           # local only: real ECS, real app containers, HTTP via the ALB
 ```
+
+The **E2E test** (alb only, not in CI) builds the alb app images locally, runs Floci with ECS mock off (needs the podman API socket, started automatically), deploys with `-c emulator=true -c e2e=true`, and asserts on responses routed through the ALB. Images are used from the local store (no ECR push). Tests live in `alb/iac/e2e/`.
 
 ### App(s) (TypeScript/Express)
 

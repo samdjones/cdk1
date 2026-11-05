@@ -29,5 +29,12 @@ x-ray/ci/emulator_test.sh
 ```
 
 Needs `podman` (or `CONTAINER_CLI=docker`). Deploy-and-assert only; no
-containers run. See [`x-ray/docs/emulator-test.md`](x-ray/docs/emulator-test.md)
+containers run. For a local-only **E2E test** that runs the real alb app
+containers behind the emulated ALB and sends HTTP requests through it:
+
+```bash
+alb/ci/e2e_test.sh
+```
+
+ See [`x-ray/docs/emulator-test.md`](x-ray/docs/emulator-test.md)
 for what's skipped and why.
