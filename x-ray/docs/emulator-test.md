@@ -27,6 +27,22 @@ resolve, and key resources exist (listener rules, services, Cloud Map entry,
 Lambdas, bucket). ECS runs in Floci's mock mode, so **no containers run and no
 traffic is routed** - this does not test application behaviour.
 
+## E2E test (alb, local only)
+
+`alb/ci/e2e_test.sh` goes further: Floci runs ECS **for real**, so the actual
+`alb/app/{main,auth,default}` images run as containers behind Floci's ALB, and
+`alb/iac/e2e/` sends HTTP requests through the listener
+(`/main/*`, `/auth/*`, default). It is not run in CI (slower; needs a container
+API socket). How it differs from the emulator test:
+
+- Images are built locally (`localhost/cdk1-alb-<svc>:e2e`) and used from the
+  local store via `FLOCI_SERVICES_ECS_IMAGE_PULL_BEHAVIOR=prefer-cached` - no ECR
+  push. `-c e2e=true` (with `-c emulator=true`) makes `emulator.py` use them.
+- ECS mock is off; Floci gets the podman/docker API socket and a shared network.
+- Floci's ALB data plane binds port 80 as non-root, so the Floci container sets
+  `net.ipv4.ip_unprivileged_port_start=0`; port 80 is published on
+  `E2E_ALB_PORT` (default 8088).
+
 ## `-c emulator=true`
 
 The scripts deploy with CDK context `emulator=true`, which `emulator.py` (in

@@ -17,6 +17,12 @@ def container_image(scope: Construct, asset_path: str) -> ecs.ContainerImage:
     `-c emulator=true` a placeholder registry image is used instead. Real
     deploys are unaffected.
     """
+    if is_emulator(scope) and scope.node.try_get_context("e2e"):
+        # Locally built image (see ci/e2e_test.sh); Floci's ECS uses the
+        # local tag when the registry pull fails, so no ECR push is needed.
+        return ecs.ContainerImage.from_registry(
+            f"localhost/cdk1-alb-{asset_path.rsplit('/', 1)[-1]}:e2e"
+        )
     if is_emulator(scope):
         return ecs.ContainerImage.from_registry(EMULATOR_PLACEHOLDER_IMAGE)
     return ecs.ContainerImage.from_asset(asset_path)
