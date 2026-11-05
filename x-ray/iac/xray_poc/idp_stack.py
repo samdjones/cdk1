@@ -11,6 +11,7 @@ from constructs import Construct
 
 from xray_poc.app_signals import APP_SIGNALS_OTEL_ENV, add_cloudwatch_agent_sidecar
 from xray_poc.shared_stack import XraySharedStack
+from xray_poc.emulator import container_image
 
 
 class XrayIdpStack(Stack):
@@ -69,7 +70,7 @@ class XrayIdpStack(Stack):
 
         app_container = task_definition.add_container(
             "IdpAppContainer",
-            image=ecs.ContainerImage.from_asset("app-idp"),
+            image=container_image(self, "app-idp"),
             environment={
                 **APP_SIGNALS_OTEL_ENV,
                 "OTEL_SERVICE_NAME": "xray-idp",
@@ -111,7 +112,7 @@ class XrayIdpStack(Stack):
         # idp still bypasses it, same as it already bypasses the ALB.
         envoy_container = task_definition.add_container(
             "IdpEnvoyProxy",
-            image=ecs.ContainerImage.from_asset("envoy-idp"),
+            image=container_image(self, "envoy-idp"),
             logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-idp-envoy"),
             essential=True,
         )

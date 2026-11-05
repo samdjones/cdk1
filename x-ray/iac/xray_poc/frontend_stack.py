@@ -16,6 +16,7 @@ from constructs import Construct
 from xray_poc.app_signals import APP_SIGNALS_OTEL_ENV, add_cloudwatch_agent_sidecar
 from xray_poc.shared_stack import XraySharedStack
 from xray_poc.idp_stack import XrayIdpStack
+from xray_poc.emulator import container_image, is_emulator
 
 
 class XrayFrontendStack(Stack):
@@ -59,6 +60,10 @@ class XrayFrontendStack(Stack):
             f"arn:aws:lambda:{Stack.of(self).region}:615299751070:layer:AWSOpenTelemetryDistroJs:15",
         )
 
+        # Emulator-test skip list: the ADOT layer lives in an AWS-owned
+        # account Floci can't reach (docs/emulator-test.md).
+        adot_layers = [] if is_emulator(self) else [adot_layer]
+
         common_otel_env = {
             "AWS_LAMBDA_EXEC_WRAPPER": "/opt/otel-instrument",
             # No OTEL_EXPORTER_OTLP_PROTOCOL override (was "grpc" under the
@@ -88,7 +93,11 @@ class XrayFrontendStack(Stack):
         # once per account/region - placed here (not in XraySharedStack)
         # because this is the stack that actually enables Application
         # Signals on anything.
-        appsignals.CfnDiscovery(self, "ApplicationSignalsDiscovery")
+        #
+        # Emulator-test skip list: Floci doesn't support
+        # AWS::ApplicationSignals::Discovery (see docs/emulator-test.md).
+        if not is_emulator(self):
+            appsignals.CfnDiscovery(self, "ApplicationSignalsDiscovery")
 
         application_signals_policy = iam.ManagedPolicy.from_aws_managed_policy_name(
             "CloudWatchLambdaApplicationSignalsExecutionRolePolicy"
@@ -99,7 +108,9 @@ class XrayFrontendStack(Stack):
             self,
             "DogBucket",
             removal_policy=RemovalPolicy.DESTROY,
-            auto_delete_objects=True,
+            # Emulator-test skip list: this adds a custom-resource Lambda that
+            # runs in Docker, which Floci can't do here (docs/emulator-test.md).
+            auto_delete_objects=not is_emulator(self),
             versioned=False,
         )
 
@@ -116,7 +127,7 @@ class XrayFrontendStack(Stack):
                 "DOG_BUCKET_NAME": dog_bucket.bucket_name,
             },
             tracing=lambda_.Tracing.ACTIVE,
-            layers=[adot_layer],
+            layers=adot_layers,
             timeout=Duration.seconds(60),
             memory_size=256,
         )
@@ -137,7 +148,7 @@ class XrayFrontendStack(Stack):
                 "S3_WRITER_FUNCTION_NAME": xray_s3_writer_fn.function_name,
             },
             tracing=lambda_.Tracing.ACTIVE,
-            layers=[adot_layer],
+            layers=adot_layers,
             timeout=Duration.seconds(30),
             memory_size=256,
         )
@@ -181,7 +192,7 @@ class XrayFrontendStack(Stack):
 
         app_container = task_definition.add_container(
             "AppContainer",
-            image=ecs.ContainerImage.from_asset("app-xray"),
+            image=container_image(self, "app-xray"),
             environment={
                 "DOG_FETCHER_LAMBDA_NAME": xray_dog_fetcher_fn.function_name,
                 **APP_SIGNALS_OTEL_ENV,
@@ -220,7 +231,7 @@ class XrayFrontendStack(Stack):
         # ── Envoy sidecar (pass-through reverse proxy in front of the app) ──
         envoy_container = task_definition.add_container(
             "EnvoyProxy",
-            image=ecs.ContainerImage.from_asset("envoy"),
+            image=container_image(self, "envoy"),
             logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-envoy"),
             essential=True,
         )
@@ -328,7 +339,7 @@ class XrayFrontendStack(Stack):
                 "FRONTEND_URL": alb_url,
             },
             tracing=lambda_.Tracing.ACTIVE,
-            layers=[adot_layer],
+            layers=adot_layers,
             timeout=Duration.seconds(30),
             memory_size=256,
         )
