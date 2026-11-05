@@ -30,9 +30,16 @@ COPY otel-bootstrap.js ./
 # give the ECS task-credentials HTTP call a readable X-Ray span name
 ENV NODE_OPTIONS="--require /app/otel-bootstrap.js"
 
-# OTEL collector sidecar endpoint (localhost since containers share network in Fargate awsvpc mode)
-ENV OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"
-ENV OTEL_EXPORTER_OTLP_PROTOCOL="grpc"
+# CloudWatch Agent sidecar endpoint - Application Signals traces + metrics
+# (localhost since containers share network in Fargate awsvpc mode)
+ENV OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+ENV OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://localhost:4316/v1/traces"
+ENV OTEL_AWS_APPLICATION_SIGNALS_EXPORTER_ENDPOINT="http://localhost:4316/v1/metrics"
+ENV OTEL_METRICS_EXPORTER="none"
+ENV OTEL_LOGS_EXPORTER="none"
+ENV OTEL_TRACES_SAMPLER="xray"
+ENV OTEL_TRACES_SAMPLER_ARG="endpoint=http://localhost:2000"
+ENV OTEL_AWS_APPLICATION_SIGNALS_ENABLED="true"
 
 # Service name for traces
 ENV OTEL_SERVICE_NAME="xray-frontend"

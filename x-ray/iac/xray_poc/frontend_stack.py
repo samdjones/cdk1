@@ -13,6 +13,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from xray_poc.app_signals import APP_SIGNALS_OTEL_ENV, add_cloudwatch_agent_sidecar
 from xray_poc.shared_stack import XraySharedStack
 from xray_poc.idp_stack import XrayIdpStack
 from xray_poc.emulator import container_image, is_emulator
@@ -194,8 +195,7 @@ class XrayFrontendStack(Stack):
             image=container_image(self, "app-xray"),
             environment={
                 "DOG_FETCHER_LAMBDA_NAME": xray_dog_fetcher_fn.function_name,
-                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
-                "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+                **APP_SIGNALS_OTEL_ENV,
                 "OTEL_SERVICE_NAME": "xray-frontend",
                 "OTEL_PROPAGATORS": "xray",
                 "AWS_XRAY_DAEMON_ADDRESS": "localhost:2000",
@@ -209,6 +209,9 @@ class XrayFrontendStack(Stack):
         app_container.add_port_mappings(ecs.PortMapping(container_port=8000))
 
         # ── OTEL Collector sidecar ─────────────────────────────────────────
+        # Only needed for Envoy's native X-Ray tracer, which ships segments over
+        # the classic UDP daemon protocol on port 2000 (see docs/envoy.md). The
+        # app's own telemetry goes to the CloudWatchAgent sidecar below.
         otel_container = task_definition.add_container(
             "OtelCollector",
             image=ecs.ContainerImage.from_registry(
@@ -221,8 +224,9 @@ class XrayFrontendStack(Stack):
                 "AWS_REGION": Stack.of(self).region,
             },
         )
-        otel_container.add_port_mappings(ecs.PortMapping(container_port=4317))
-        otel_container.add_port_mappings(ecs.PortMapping(container_port=4318))
+
+        # ── CloudWatch Agent sidecar (Application Signals for this task) ───
+        add_cloudwatch_agent_sidecar(task_definition, "CloudWatchAgent", "xray-cwagent", app_container, container_image(self, "app-xray"))
 
         # ── Envoy sidecar (pass-through reverse proxy in front of the app) ──
         envoy_container = task_definition.add_container(

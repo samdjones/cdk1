@@ -9,6 +9,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from xray_poc.app_signals import APP_SIGNALS_OTEL_ENV, add_cloudwatch_agent_sidecar
 from xray_poc.shared_stack import XraySharedStack
 from xray_poc.emulator import container_image
 
@@ -71,8 +72,7 @@ class XrayIdpStack(Stack):
             "IdpAppContainer",
             image=container_image(self, "app-idp"),
             environment={
-                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
-                "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+                **APP_SIGNALS_OTEL_ENV,
                 "OTEL_SERVICE_NAME": "xray-idp",
                 "OTEL_PROPAGATORS": "xray",
                 "AWS_XRAY_DAEMON_ADDRESS": "localhost:2000",
@@ -83,6 +83,9 @@ class XrayIdpStack(Stack):
         )
         app_container.add_port_mappings(ecs.PortMapping(container_port=self.container_port))
 
+        # Only needed for Envoy's native X-Ray tracer, which ships segments over
+        # the classic UDP daemon protocol on port 2000 (see docs/envoy.md). The
+        # app's own telemetry goes to the IdpCloudWatchAgent sidecar below.
         otel_container = task_definition.add_container(
             "IdpOtelCollector",
             image=ecs.ContainerImage.from_registry(
@@ -95,8 +98,9 @@ class XrayIdpStack(Stack):
                 "AWS_REGION": Stack.of(self).region,
             },
         )
-        otel_container.add_port_mappings(ecs.PortMapping(container_port=4317))
-        otel_container.add_port_mappings(ecs.PortMapping(container_port=4318))
+
+        # ── CloudWatch Agent sidecar (Application Signals for this task) ──
+        add_cloudwatch_agent_sidecar(task_definition, "IdpCloudWatchAgent", "xray-idp-cwagent", app_container, container_image(self, "app-idp"))
 
         # ── Envoy sidecar (pass-through reverse proxy in front of the app) ──
         # Same distroless pattern as XrayFrontendStack's Envoy - see
