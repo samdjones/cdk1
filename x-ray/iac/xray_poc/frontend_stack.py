@@ -16,7 +16,7 @@ from constructs import Construct
 from xray_poc.app_signals import APP_SIGNALS_OTEL_ENV, add_cloudwatch_agent_sidecar
 from xray_poc.shared_stack import XraySharedStack
 from xray_poc.idp_stack import XrayIdpStack
-from xray_poc.emulator import container_image, is_emulator
+from xray_poc.emulator import container_image, e2e_env, is_e2e, is_emulator
 
 
 class XrayFrontendStack(Stack):
@@ -98,6 +98,12 @@ class XrayFrontendStack(Stack):
         # AWS::ApplicationSignals::Discovery (see docs/emulator-test.md).
         if not is_emulator(self):
             appsignals.CfnDiscovery(self, "ApplicationSignalsDiscovery")
+
+        # E2E test skip: the wrapper script ships in the ADOT layer, which is
+        # absent under the emulator; a missing wrapper makes the Lambda runtime
+        # exit 127. Drop it so the handlers actually run (docs/emulator-test.md).
+        if is_e2e(self):
+            common_otel_env.pop("AWS_LAMBDA_EXEC_WRAPPER")
 
         application_signals_policy = iam.ManagedPolicy.from_aws_managed_policy_name(
             "CloudWatchLambdaApplicationSignalsExecutionRolePolicy"
@@ -202,6 +208,7 @@ class XrayFrontendStack(Stack):
                 "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "true",
                 "NODE_OPTIONS": "--require /app/otel-bootstrap.js",
                 "IDP_URL": idp_url,
+                **e2e_env(self),
             },
             logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-app"),
             essential=True,
@@ -229,24 +236,31 @@ class XrayFrontendStack(Stack):
         add_cloudwatch_agent_sidecar(task_definition, "CloudWatchAgent", "xray-cwagent", app_container, container_image(self, "app-xray"))
 
         # ── Envoy sidecar (pass-through reverse proxy in front of the app) ──
-        envoy_container = task_definition.add_container(
-            "EnvoyProxy",
-            image=container_image(self, "envoy"),
-            logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-envoy"),
-            essential=True,
-        )
-        envoy_container.add_port_mappings(ecs.PortMapping(container_port=8080))
-
-        envoy_container.add_container_dependencies(
-            ecs.ContainerDependency(
-                container=app_container,
-                condition=ecs.ContainerDependencyCondition.START,
+        # E2E test skip: Floci only shares a task's network namespace (so Envoy
+        # can reach the app on 127.0.0.1) with security-group enforcement,
+        # which needs rootful Docker. In E2E the ALB targets the app directly.
+        # See docs/emulator-test.md.
+        if is_e2e(self):
+            task_definition.default_container = app_container
+        else:
+            envoy_container = task_definition.add_container(
+                "EnvoyProxy",
+                image=container_image(self, "envoy"),
+                logging=ecs.LogDrivers.aws_logs(stream_prefix="xray-envoy"),
+                essential=True,
             )
-        )
+            envoy_container.add_port_mappings(ecs.PortMapping(container_port=8080))
 
-        # Envoy now fronts the task, so it - not the app container - is the
-        # ALB's target.
-        task_definition.default_container = envoy_container
+            envoy_container.add_container_dependencies(
+                ecs.ContainerDependency(
+                    container=app_container,
+                    condition=ecs.ContainerDependencyCondition.START,
+                )
+            )
+
+            # Envoy now fronts the task, so it - not the app container - is the
+            # ALB's target.
+            task_definition.default_container = envoy_container
 
         # ── ECS Service ──────────────────────────────────────────────────────
         service = ecs.FargateService(

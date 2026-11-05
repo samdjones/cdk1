@@ -43,6 +43,25 @@ API socket). How it differs from the emulator test:
   `net.ipv4.ip_unprivileged_port_start=0`; port 80 is published on
   `E2E_ALB_PORT` (default 8088).
 
+## E2E test (x-ray, local only)
+
+`x-ray/ci/e2e_test.sh` runs the three x-ray stacks with real ECS and Lambda in
+Floci: the real `app-xray` / `app-idp` containers and the three Lambdas run, and
+`x-ray/iac/e2e/` sends requests through the ALB (`/idp/health`, `/health`, and
+`/fetch-dog` = ALB -> frontend -> dog-fetcher Lambda -> s3-writer Lambda -> S3,
+then reads the objects back). Needs internet (dog.ceo). Same mechanics as the
+alb E2E test above; run with `KEEP=1` to leave Floci up for
+`podman logs -f floci-e2e-xray`. Extra skips under `-c e2e=true`:
+
+| Skipped / swapped | Why |
+|---|---|
+| Envoy sidecars (ALB targets the app container) | Floci only shares a task's network namespace (Envoy -> app on `127.0.0.1`) with security-group enforcement, which needs rootful Docker; rootless podman fails with "Security-group enforcement requires rootful Docker" |
+| Lambda `AWS_LAMBDA_EXEC_WRAPPER` | The wrapper ships in the ADOT layer, which is skipped, so the runtime would exit 127 |
+| App containers' AWS SDK pointed at Floci (`e2e_env`) | They must reach Floci, not real AWS |
+
+The OTel collector sidecar isn't functional, so the apps log harmless
+`ECONNREFUSED :4317` export errors.
+
 ## `-c emulator=true`
 
 The scripts deploy with CDK context `emulator=true`, which `emulator.py` (in
